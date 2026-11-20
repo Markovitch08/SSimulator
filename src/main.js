@@ -147,9 +147,9 @@ const pedestal = new THREE.Group();
   label.position.set(0, 1.0, 0); label.rotation.y = 0;
   pedestal.add(label);
 }
-pedestal.position.set(-0.55, 0, -0.45);
+pedestal.position.set(-0.75, 0, -0.8); // fixed in the world, not to the player
 pedestal.rotation.y = 0.5;
-dolly.add(pedestal);
+scene.add(pedestal);
 let btnCd = 0, btnPress = 0;
 
 const wristCanvas = document.createElement('canvas'); wristCanvas.width = 256; wristCanvas.height = 96;

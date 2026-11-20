@@ -47,15 +47,40 @@ const JOINTS = [
 
 const UARM = 0.3, LARM = 0.29, THIGH = 0.44, SHIN = 0.44;
 
-// Telegraphed attacks: hand position + blade direction keyframes (right-positive local space).
+// Attack move set: hand position + blade direction keyframes (right-positive local space)
+// [windup, mid, end]. w = windup time range, s = strike time, lunge = forward speed during
+// the strike, range = [min, max] distance it is used from, weight = how often it is picked.
 const ATTACKS = {
-  overhead: [{ h: [0.15, 1.85, -0.05], b: [0, 0.35, -1] }, { h: [0.12, 1.75, 0.32], b: [0, 1, 0.2] }, { h: [0.05, 1.05, 0.62], b: [0, -0.45, 1] }],
-  side: [{ h: [0.55, 1.45, -0.05], b: [0.85, 0.3, -0.4] }, { h: [0.2, 1.38, 0.5], b: [0.15, 0.15, 1] }, { h: [-0.35, 1.2, 0.42], b: [-0.85, -0.05, 0.55] }],
-  thrust: [{ h: [0.22, 1.3, -0.12], b: [0, 0.1, 1] }, { h: [0.15, 1.33, 0.25], b: [0, 0.08, 1] }, { h: [0.06, 1.36, 0.66], b: [0, 0.05, 1] }],
+  overhead: { w: [0.3, 0.55], s: 0.22, dmg: 16, lunge: 1.3, range: [0, 1.6], weight: 3,
+    keys: [{ h: [0.15, 1.85, -0.05], b: [0, 0.35, -1] }, { h: [0.12, 1.75, 0.32], b: [0, 1, 0.2] }, { h: [0.05, 1.05, 0.62], b: [0, -0.45, 1] }] },
+  side: { w: [0.25, 0.5], s: 0.22, dmg: 15, lunge: 1.0, range: [0, 1.6], weight: 3,
+    keys: [{ h: [0.55, 1.45, -0.05], b: [0.85, 0.3, -0.4] }, { h: [0.2, 1.38, 0.5], b: [0.15, 0.15, 1] }, { h: [-0.35, 1.2, 0.42], b: [-0.85, -0.05, 0.55] }] },
+  backhand: { w: [0.25, 0.45], s: 0.2, dmg: 14, lunge: 1.0, range: [0, 1.6], weight: 3,
+    keys: [{ h: [-0.35, 1.45, 0.0], b: [-0.85, 0.3, -0.35] }, { h: [-0.05, 1.38, 0.5], b: [-0.1, 0.15, 1] }, { h: [0.5, 1.25, 0.35], b: [0.85, 0, 0.5] }] },
+  diagDown: { w: [0.3, 0.5], s: 0.22, dmg: 16, lunge: 1.2, range: [0, 1.6], weight: 3,
+    keys: [{ h: [0.4, 1.75, -0.05], b: [0.6, 0.6, -0.5] }, { h: [0.15, 1.5, 0.45], b: [0.1, 0.35, 1] }, { h: [-0.3, 1.0, 0.45], b: [-0.6, -0.5, 0.6] }] },
+  diagUp: { w: [0.25, 0.45], s: 0.22, dmg: 14, lunge: 1.0, range: [0, 1.6], weight: 2,
+    keys: [{ h: [-0.3, 0.95, 0.1], b: [-0.6, -0.6, 0.3] }, { h: [0.0, 1.25, 0.5], b: [0, 0.2, 1] }, { h: [0.3, 1.7, 0.3], b: [0.5, 0.8, 0.3] }] },
+  hipCut: { w: [0.3, 0.5], s: 0.22, dmg: 13, lunge: 1.0, range: [0, 1.6], weight: 2,
+    keys: [{ h: [0.55, 1.1, -0.05], b: [0.85, -0.1, -0.4] }, { h: [0.15, 1.05, 0.5], b: [0.1, -0.1, 1] }, { h: [-0.4, 1.0, 0.4], b: [-0.85, -0.1, 0.5] }] },
+  thrust: { w: [0.25, 0.45], s: 0.2, dmg: 18, lunge: 1.6, range: [0, 1.7], weight: 2,
+    keys: [{ h: [0.22, 1.3, -0.12], b: [0, 0.1, 1] }, { h: [0.15, 1.33, 0.25], b: [0, 0.08, 1] }, { h: [0.06, 1.36, 0.66], b: [0, 0.05, 1] }] },
+  jab: { w: [0.1, 0.2], s: 0.13, dmg: 9, lunge: 0.8, range: [0, 1.5], weight: 2,
+    keys: [{ h: [0.18, 1.38, 0.08], b: [0, 0.05, 1] }, { h: [0.12, 1.4, 0.35], b: [0, 0.04, 1] }, { h: [0.08, 1.42, 0.6], b: [0, 0.04, 1] }] },
+  lunge: { w: [0.25, 0.4], s: 0.32, dmg: 20, lunge: 3.2, range: [1.5, 2.7], weight: 3,
+    keys: [{ h: [0.2, 1.15, -0.1], b: [0, 0.2, 1] }, { h: [0.15, 1.25, 0.3], b: [0, 0.1, 1] }, { h: [0.06, 1.35, 0.66], b: [0, 0.05, 1] }] },
 };
-const ATTACK_NAMES = Object.keys(ATTACKS);
-const MARCH = { h: [0.24, 1.42, 0.2], b: [0.05, 0.85, 0.42] };
-const WINDUP = 0.5, STRIKE = 0.22, RECOVER = 0.45;
+// guard stances held between attacks; attacks start from wherever the sword is,
+// so rotating guards hides which attack is coming
+const GUARDS = [
+  { h: [0.24, 1.5, 0.18], b: [0.05, 0.85, 0.42] },   // high (ox)
+  { h: [0.18, 1.15, 0.3], b: [-0.05, 0.35, 1] },     // middle, point at you (plow)
+  { h: [0.2, 1.0, 0.3], b: [0, -0.5, 1] },           // low (fool)
+  { h: [0.3, 1.45, -0.02], b: [0.25, 0.5, -0.85] },  // sword on shoulder
+];
+const MARCH = GUARDS[0];
+const rnd = (a, b) => a + Math.random() * (b - a);
+const jit = (arr, s) => arr.map(v => v + (Math.random() - 0.5) * 2 * s);
 
 const tA = new THREE.Vector3(), tB = new THREE.Vector3(), tC = new THREE.Vector3(), tD = new THREE.Vector3();
 const qA = new THREE.Quaternion(), qB = new THREE.Quaternion();
@@ -86,7 +111,11 @@ export class Enemy {
     const p = ctx.player.head;
     this.yaw = Math.atan2(p.x - pos.x, p.z - pos.z);
     this.state = 'fall'; this.stateT = 0;
-    this.hp = 100; this.dead = false;
+    this.hp = 170; this.dead = false;
+    this.guard = (Math.random() * GUARDS.length) | 0; this.guardT = rnd(1, 3);
+    this.pref = rnd(1.0, 1.8); this.prefT = rnd(1, 3);
+    this.dodge = new THREE.Vector3();
+    this.atk = null; this.atkPhase = null; this.feint = null; this.combo = 0;
     this.freeze = 0; this.flash = 0; this.hitCd = 0; this.clashCd = 0;
     this.atkCd = 0.6 + Math.random() * 0.5; this.thinkT = 0; this.phase = Math.random() * 6;
     this.attack = null; this.hitDone = false;
@@ -185,19 +214,41 @@ export class Enemy {
         break;
       }
       case 'approach': {
-        // utility-ish choice: close distance, hold, back off, strafe; attack when in range
-        const speed = 1.7;
-        if (dist > 1.3) want.copy(toP).normalize().multiplyScalar(speed);
-        else if (dist < 0.85) want.copy(toP).normalize().multiplyScalar(-1.1);
-        else want.copy(right).multiplyScalar(this.strafe * 0.6);
-        if (dist < 1.6 && this.atkCd <= 0) this.startAttack();
-        else if (this.thinkT <= 0) {
-          this.thinkT = 0.15 + Math.random() * 0.1; // reaction delay
-          if (Math.random() < 0.02) this.strafe *= -1;
+        // close distance, hold a preferred range, back off, circle; pick an attack that fits the range
+        const g = GUARDS[this.guard];
+        handT = g.h; bladeT = g.b;
+        this.guardT -= adt;
+        if (this.guardT <= 0) { this.guard = (Math.random() * GUARDS.length) | 0; this.guardT = rnd(1.2, 3.5); }
+        this.prefT -= adt;
+        if (this.prefT <= 0) { this.pref = rnd(1.0, 2.1); this.prefT = rnd(1.5, 3.5); if (Math.random() < 0.35) this.strafe *= -1; }
+        const speed = 1.8;
+        if (dist > this.pref + 0.25) want.copy(toP).normalize().multiplyScalar(speed);
+        else if (dist < 0.85) want.copy(toP).normalize().multiplyScalar(-1.2);
+        else want.copy(right).multiplyScalar(this.strafe * rnd(0.5, 0.9));
+        if (this.atkCd <= 0) {
+          const opts = Object.entries(ATTACKS).filter(([, a]) => dist >= a.range[0] && dist <= a.range[1]);
+          if (opts.length) this.startAttack(opts);
+        }
+        if (this.state === 'approach' && this.thinkT <= 0) {
+          this.thinkT = rnd(0.12, 0.25); // reaction delay
           // read the player's blade: predict the tip ~0.2 s ahead
           const pred = tA.copy(P.tip).addScaledVector(P.tipVel, 0.2);
           const chest = this.toWorld(R(0, 1.35, 0), tB);
-          if (P.tipVel.length() > 3 && pred.distanceTo(chest) < 0.75 && Math.random() < 0.45) this.setState('block', 0.4);
+          const swing = new THREE.Line3(P.tip, pred).closestPointToPoint(chest, true, new THREE.Vector3());
+          if (P.tipVel.length() > 3 && swing.distanceTo(chest) < 0.9) {
+            const r = Math.random();
+            if (r < 0.4) this.setState('block', 0.4);
+            else if (r < 0.58) { this.dodge.copy(toP).normalize().multiplyScalar(-3.2); this.setState('dodge', 0.28); }
+            else if (r < 0.72) { this.dodge.copy(right).multiplyScalar((Math.random() < 0.5 ? -1 : 1) * 3); this.setState('dodge', 0.28); }
+          }
+        }
+        break;
+      }
+      case 'dodge': {
+        want.copy(this.dodge); leanF = -0.12;
+        if (this.stateT >= this.stateDur) {
+          this.setState('approach');
+          if (Math.random() < 0.5) this.atkCd = 0; // counter-attack right out of the dodge
         }
         break;
       }
@@ -214,31 +265,50 @@ export class Enemy {
         bw.normalize(); if (bw.y < 0) bw.negate(); bw.y += 0.3;
         const bl = bw.applyAxisAngle(UP, -this.yaw).normalize();
         bladeT = [-bl.x, bl.y, bl.z]; handK = 30;
-        if (this.stateT >= this.stateDur) this.setState('approach');
+        if (this.stateT >= this.stateDur) { this.setState('approach'); if (Math.random() < 0.45) this.atkCd = 0; }
         break;
       }
       case 'attack': {
-        const keys = ATTACKS[this.attack];
+        const atk = this.atk;
         const s = this.stateT;
-        if (s < WINDUP) { // telegraph: wind up, blade glows
-          handT = keys[0].h; bladeT = keys[0].b; handK = 9; leanF = -0.1;
-          twist = this.attack === 'side' ? 0.45 : 0;
-          this.sword.bladeMat.emissive.setRGB(0.9 * s / WINDUP, 0.05, 0.05);
-          want.copy(toP).normalize().multiplyScalar(dist > 1.1 ? 0.6 : 0);
-        } else if (s < WINDUP + STRIKE) {
-          const u = Math.pow((s - WINDUP) / STRIKE, 1.4);
+        const twistOf = k => THREE.MathUtils.clamp(k.h[0] * 0.8, -0.45, 0.45); // torso turns toward the windup side
+        if (this.atkPhase === 'feint') {
+          // fake windup for a different attack, then switch
+          const k = this.feint.keys[0];
+          handT = k.h; bladeT = k.b; handK = 10; leanF = -0.08; twist = twistOf(k);
+          if (s >= this.feint.windup) { this.atkPhase = 'windup'; this.stateT = 0; atk.windup *= 0.5; }
+        } else if (this.atkPhase === 'windup') {
+          const k = atk.keys[0];
+          handT = k.h; bladeT = k.b; handK = atk.windup < 0.22 ? 22 : 11; leanF = -0.08; twist = twistOf(k);
+          const glow = Math.max(0, (s - atk.windup + 0.12) / 0.12) * 0.35; // faint, late tell
+          this.sword.bladeMat.emissive.setRGB(glow, 0.02, 0.02);
+          want.copy(toP).normalize().multiplyScalar(dist > 1.2 ? 0.8 : 0);
+          if (s >= atk.windup) { this.atkPhase = 'strike'; this.stateT = 0; }
+        } else if (this.atkPhase === 'strike') {
+          const u = Math.pow(Math.min(1, s / atk.strike), 1.4);
           const seg = u < 0.5 ? 0 : 1, f = u < 0.5 ? u * 2 : (u - 0.5) * 2;
-          const a = keys[seg], b = keys[seg + 1];
+          const a = atk.keys[seg], b = atk.keys[seg + 1];
           handT = [a.h[0] + (b.h[0] - a.h[0]) * f, a.h[1] + (b.h[1] - a.h[1]) * f, a.h[2] + (b.h[2] - a.h[2]) * f];
           bladeT = [a.b[0] + (b.b[0] - a.b[0]) * f, a.b[1] + (b.b[1] - a.b[1]) * f, a.b[2] + (b.b[2] - a.b[2]) * f];
-          handK = 70; leanF = 0.35; twist = this.attack === 'side' ? -0.4 : 0;
-          want.copy(fwd).multiplyScalar(1.3); turn = 1.5;
-          this.sword.bladeMat.emissive.setRGB(0.9, 0.08, 0.05);
+          handK = 70; leanF = atk.lunge > 2 ? 0.5 : 0.35; twist = -twistOf(atk.keys[0]);
+          want.copy(fwd).multiplyScalar(atk.lunge); turn = 1.5;
+          this.sword.bladeMat.emissive.setRGB(0.35, 0.03, 0.03);
           if (!this.hitDone) this.checkPlayerHit();
+          if (s >= atk.strike) {
+            this.sword.bladeMat.emissive.setRGB(0, 0, 0);
+            if (this.combo > 0 && dist < 1.9) {
+              // chain straight into another attack from where this one ended
+              this.combo--;
+              const opts = Object.entries(ATTACKS).filter(([n, x]) => n !== atk.name && x.range[0] < 1.4);
+              this.atk = this.buildAttack(...opts[(Math.random() * opts.length) | 0]);
+              this.atk.windup = rnd(0.12, 0.26);
+              this.hitDone = false; this.atkPhase = 'windup'; this.stateT = 0;
+            } else { this.atkPhase = 'recover'; this.stateT = 0; }
+          }
         } else {
-          handT = keys[2].h; bladeT = keys[2].b; handK = 6; leanF = 0.2;
-          this.sword.bladeMat.emissive.setRGB(0, 0, 0);
-          if (s >= WINDUP + STRIKE + RECOVER) { this.setState('approach'); this.atkCd = 0.5 + Math.random() * 0.9; }
+          const k = atk.keys[2];
+          handT = k.h; bladeT = k.b; handK = 6; leanF = 0.2;
+          if (s >= atk.recover) { this.setState('approach'); this.atkCd = rnd(0.3, 1.4); }
         }
         break;
       }
@@ -290,8 +360,26 @@ export class Enemy {
     this.applyPose();
   }
 
-  startAttack() {
-    this.attack = ATTACK_NAMES[(Math.random() * ATTACK_NAMES.length) | 0];
+  // Each attack instance gets its own timing and slightly jittered path, so no two swings look identical.
+  buildAttack(name, def) {
+    const keys = def.keys.map(k => ({ h: jit(k.h, 0.07), b: jit(k.b, 0.15) }));
+    return { name, keys, windup: rnd(def.w[0], def.w[1]), strike: def.s * rnd(0.9, 1.15), recover: rnd(0.25, 0.55), dmg: def.dmg, lunge: def.lunge };
+  }
+
+  startAttack(opts) {
+    let total = 0;
+    for (const [, a] of opts) total += a.weight;
+    let r = Math.random() * total, pick = opts[0];
+    for (const o of opts) { r -= o[1].weight; if (r <= 0) { pick = o; break; } }
+    this.atk = this.buildAttack(...pick);
+    this.feint = null;
+    if (pick[0] !== 'lunge' && Math.random() < 0.22) {
+      const others = Object.entries(ATTACKS).filter(([n]) => n !== pick[0] && n !== 'lunge');
+      this.feint = this.buildAttack(...others[(Math.random() * others.length) | 0]);
+      this.feint.windup = rnd(0.2, 0.35);
+    }
+    this.combo = Math.random() < 0.4 ? (Math.random() < 0.35 ? 2 : 1) : 0;
+    this.atkPhase = this.feint ? 'feint' : 'windup';
     this.hitDone = false;
     this.setState('attack');
   }
@@ -382,14 +470,14 @@ export class Enemy {
     const a = tA.set(0, this.sword.baseY, 0).applyQuaternion(sp.q).add(sp.p);
     const b = tB.set(0, this.sword.tipY, 0).applyQuaternion(sp.q).add(sp.p);
     const segP = new THREE.Line3(a, b);
-    const top = P.head, bot = new THREE.Vector3(P.head.x, P.head.y - 0.65, P.head.z);
+    const top = P.head, bot = new THREE.Vector3(P.head.x, P.head.y - 0.8, P.head.z);
     let best = Infinity;
     for (let i = 0; i <= 6; i++) {
       const q = new THREE.Vector3().lerpVectors(top, bot, i / 6);
       const c = segP.closestPointToPoint(q, true, new THREE.Vector3());
       best = Math.min(best, c.distanceTo(q));
     }
-    if (best < 0.2) { this.hitDone = true; this.ctx.damagePlayer(this.attack === 'thrust' ? 18 : 15, this); }
+    if (best < 0.2) { this.hitDone = true; this.ctx.damagePlayer(this.atk.dmg, this); }
   }
 
   takeHit(hit) {
@@ -408,15 +496,16 @@ export class Enemy {
       const axis = new THREE.Vector3().crossVectors(UP, dh);
       this.leanW.addScaledVector(axis, Math.min(9, hit.speed * (hit.part === 'head' ? 1.1 : 0.7)));
     }
-    if (this.state === 'attack' && this.stateT < WINDUP + STRIKE) this.sword.bladeMat.emissive.setRGB(0, 0, 0);
+    this.sword.bladeMat.emissive.setRGB(0, 0, 0);
     if (this.state !== 'fall') this.setState('stagger', 0.3 + Math.min(0.3, hit.dmg / 150));
   }
 
   onClash(rel) {
     if (this.dead || this.clashCd > 0) return false;
     this.clashCd = 0.15;
-    const parried = this.state === 'attack' && this.stateT > WINDUP * 0.6 && this.stateT < WINDUP + STRIKE;
+    const parried = this.state === 'attack' && (this.atkPhase === 'strike' || (this.atkPhase === 'windup' && this.stateT > this.atk.windup * 0.6));
     if (parried) {
+      this.sword.bladeMat.emissive.setRGB(0, 0, 0);
       this.hitDone = true;
       this.knock.addScaledVector(new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)), 1.6);
       this.setState('stagger', 0.75);
