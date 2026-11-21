@@ -413,7 +413,8 @@ function registerHit(e, partKey, pt, v, tipW, travel, hitThisStep) {
   const dmg = Math.min(140, (eff - 1.5) * DMG.scale * part.mult);
   stats.hits++;
   e.hitCd = 0.15;
-  e.takeHit({ part: partKey, point: pt, dir: vr.clone().normalize(), speed: eff, dmg });
+  const cut = slash >= thrust * 1.25 && slash >= flat * 0.45; // edge-led, so it can sever a limb
+  e.takeHit({ part: partKey, point: pt, dir: vr.clone().normalize(), speed: eff, dmg, cut });
   pulse('right', 0.35 + dmg / 80, 40 + dmg);
 }
 
