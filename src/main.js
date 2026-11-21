@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { RAPIER, FIXED, phys, initPhysics, GROUPS, hullDesc } from './physics.js';
+import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, hullDesc } from './physics.js';
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { Particles, Pieces } from './fx.js';
 import { Enemy } from './enemy.js';
@@ -18,7 +18,7 @@ const DRIVE = {
   maxAngAcc: 900,  // rad/s^2
   snapDist: 0.9,   // teleport back to the hand if it gets stuck this far away
 };
-const DMG = { floor: 2.4, minTravel: 0.22, scale: 13 };
+const DMG = { floor: 1.8, minTravel: 0.12, scale: 13 };
 const MAX_ALIVE = 6;
 
 // ---------------------------------------------------------------- renderer / scene
@@ -386,12 +386,46 @@ function swingTravel(window = 0.2) {
 }
 
 const ax = { blade: new THREE.Vector3(), edge: new THREE.Vector3(), flat: new THREE.Vector3() };
-function processContacts() {
+const SWEEP_GROUPS = grp(G.PSWORD, G.EALIVE);
+const SWEEP_FRACS = [0.15, 0.35, 0.55, 0.75, 0.9, 1.0];
+
+// one place that turns "blade touched enemy part at pt with blade velocity v" into a hit
+const stats = { hits: 0, glances: 0, clashes: 0, rayHits: 0, contactHits: 0 };
+function registerHit(e, partKey, pt, v, tipW, travel, hitThisStep) {
+  if (e.dead || e.hitCd > 0 || hitThisStep.has(e)) return;
+  // relative to the enemy's own movement (not the limb's post-impact velocity, which the
+  // blade itself just changed)
+  const vr = v.clone().sub(e.vel).sub(e.knock);
+  const slash = Math.abs(vr.dot(ax.edge));
+  const flat = Math.abs(vr.dot(ax.flat));
+  const along = vr.dot(ax.blade);
+  const thrust = pt.distanceTo(tipW) < 0.22 && along > 0 ? along : 0;
+  const eff = Math.max(slash, thrust * 1.25, flat * 0.45);
+  if (eff < DMG.floor || travel < DMG.minTravel) {
+    // too slow / off-edge: a glance. It doesn't block a real hit right after it.
+    stats.glances++;
+    if (!(e.glanceCd > simTime)) { e.glanceCd = simTime + 0.25; sfx.glance(); particles.emit('spark', pt, null, 4, 1.5); pulse('right', 0.15, 20); }
+    return;
+  }
+  hitThisStep.add(e);
+  const part = e.parts[partKey];
+  const dmg = Math.min(140, (eff - 1.5) * DMG.scale * part.mult);
+  stats.hits++;
+  e.hitCd = 0.15;
+  e.takeHit({ part: partKey, point: pt, dir: vr.clone().normalize(), speed: eff, dmg });
+  pulse('right', 0.35 + dmg / 80, 40 + dmg);
+}
+
+function processContacts(h) {
   ax.blade.set(0, 1, 0).applyQuaternion(pre.q);
   ax.edge.set(0, 0, 1).applyQuaternion(pre.q);
   ax.flat.set(1, 0, 0).applyQuaternion(pre.q);
   const tipW = new THREE.Vector3(0, psword.tipY, 0).applyQuaternion(pre.q).add(pre.pos);
   const travel = swingTravel();
+  const hitThisStep = new Set();
+  const velAt = pt => new THREE.Vector3().crossVectors(pre.ang, tmpV.subVectors(pt, pre.com)).add(pre.lin);
+
+  // 1) real contacts
   world.contactPairsWith(bladeCol, other => {
     const info = phys.info.get(other.handle);
     if (!info) return;
@@ -400,27 +434,11 @@ function processContacts() {
       if (!pt && m.numSolverContacts() > 0) { const p = m.solverContactPoint(0); pt = new THREE.Vector3(p.x, p.y, p.z); }
     });
     if (!pt) return;
-    // velocity of the blade at the contact point (pre-solve, i.e. the real swing)
-    const v = new THREE.Vector3().crossVectors(pre.ang, tmpV.subVectors(pt, pre.com)).add(pre.lin);
-    if (info.kind === 'enemy') {
-      const e = info.enemy;
-      if (e.dead || e.hitCd > 0) return;
-      const vr = v.clone().sub(e.vel).sub(e.knock);
-      const slash = Math.abs(vr.dot(ax.edge));
-      const flat = Math.abs(vr.dot(ax.flat));
-      const along = vr.dot(ax.blade);
-      const thrust = pt.distanceTo(tipW) < 0.18 && along > 0 ? along : 0;
-      const eff = Math.max(slash, thrust * 1.25, flat * 0.45);
-      if (eff < DMG.floor || travel < DMG.minTravel) {
-        e.hitCd = 0.12; sfx.glance(); particles.emit('spark', pt, null, 4, 1.5); pulse('right', 0.15, 20);
-        return;
-      }
-      const part = e.parts[info.part];
-      const dmg = Math.min(140, (eff - 2.0) * DMG.scale * part.mult);
-      e.hitCd = 0.2;
-      e.takeHit({ part: info.part, point: pt, dir: vr.clone().normalize(), speed: eff, dmg });
-      pulse('right', 0.35 + dmg / 80, 40 + dmg);
-    } else if (info.kind === 'esword') {
+    const v = velAt(pt);
+    if (info.kind === 'enemy' && !hitThisStep.has(info.enemy)) stats.contactHits++;
+    if (info.kind === 'enemy') registerHit(info.enemy, info.part, pt, v, tipW, travel, hitThisStep);
+    else if (info.kind === 'esword') {
+      stats.clashes++;
       const parried = info.enemy.onClash(v.length());
       if (info.enemy.clashCd > 0.14 || parried) {
         sfx.clang(Math.min(1, v.length() / 8 + (parried ? 0.4 : 0)));
@@ -431,6 +449,23 @@ function processContacts() {
       pieceSoundCd = 0.1; sfx.thump(Math.min(0.6, v.length() / 15)); pulse('right', 0.25, 25);
     }
   });
+
+  // 2) swept rays along the blade's path this step, so fast swings can't skip past thin limbs
+  for (const f of SWEEP_FRACS) {
+    const y = psword.baseY + (psword.tipY - psword.baseY) * f;
+    const o = new THREE.Vector3(0, y, 0).applyQuaternion(pre.q).add(pre.pos);
+    const v = velAt(o);
+    const len = v.length() * h * 1.5 + 0.01;
+    if (v.length() < 1) continue;
+    const d = v.clone().normalize();
+    const hit = world.castRay(new RAPIER.Ray(o, d), len, true, undefined, SWEEP_GROUPS);
+    if (!hit) continue;
+    const info = phys.info.get(hit.collider.handle);
+    if (info?.kind !== 'enemy') continue;
+    const pt = o.clone().addScaledVector(d, hit.timeOfImpact);
+    if (!hitThisStep.has(info.enemy)) stats.rayHits++;
+    registerHit(info.enemy, info.part, pt, v, tipW, travel, hitThisStep);
+  }
 }
 
 function fixedStep(h) {
@@ -444,7 +479,7 @@ function fixedStep(h) {
   if (target.valid) driveSword(h);
   for (const e of enemies) e.update(h);
   world.step();
-  processContacts();
+  processContacts(h);
 
   const tt = swordBody.translation(), rr = swordBody.rotation();
   const q = tmpQ.set(rr.x, rr.y, rr.z, rr.w);
@@ -499,6 +534,7 @@ renderer.setAnimationLoop(() => {
   tether.geometry.attributes.position.setXYZ(1, t.x, t.y, t.z);
   tether.geometry.attributes.position.needsUpdate = true;
 
+  for (const e of enemies) e.syncMeshes();
   pieces.update(dt);
   particles.update(dt);
   updateButton(dt);
@@ -512,4 +548,4 @@ renderer.setAnimationLoop(() => {
 });
 
 // test / debug hook
-window.game = { spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };
+window.game = { stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };

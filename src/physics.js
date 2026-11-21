@@ -13,9 +13,9 @@ export const grp = (member, filter) => (member << 16) | filter;
 export const GROUPS = {
   ground: grp(G.GROUND, 0xffff),
   psword: grp(G.PSWORD, G.GROUND | G.EALIVE | G.ESWORD | G.PIECE | G.DEBRIS),
-  ealive: grp(G.EALIVE, G.PSWORD),
+  ealive: grp(G.EALIVE, G.GROUND | G.PSWORD | G.PIECE),
   esword: grp(G.ESWORD, G.PSWORD),
-  piece: grp(G.PIECE, G.GROUND | G.PSWORD | G.PIECE),
+  piece: grp(G.PIECE, G.GROUND | G.PSWORD | G.PIECE | G.EALIVE),
   debris: grp(G.DEBRIS, G.GROUND | G.PSWORD),
 };
 

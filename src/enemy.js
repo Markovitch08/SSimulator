@@ -5,9 +5,10 @@ import { sfx } from './audio.js';
 
 // ---------------------------------------------------------------------------
 // Enemy = hidden procedural "target skeleton" (two-bone IK, no keyframed
-// animation, as Half Sword does) driving kinematic body parts while alive.
-// On death every part becomes a dynamic rigid body: the core is jointed into a
-// ragdoll, the rest is cut loose as separate pieces.
+// animation, as Half Sword does). The visible body is a jointed physics ragdoll
+// whose parts chase that skeleton with strength-limited "muscles" (TABS-style
+// wobble). One tonus value scales all muscles: hits sap it, knockdowns drop it
+// to near zero, and death removes it and cuts some joints.
 // Local frame: +Z = forward (toward the player), +Y = up. Poses are authored
 // "right-positive" (x>0 = the enemy's right) and converted with R().
 // ---------------------------------------------------------------------------
@@ -82,6 +83,30 @@ const MARCH = GUARDS[0];
 const rnd = (a, b) => a + Math.random() * (b - a);
 const jit = (arr, s) => arr.map(v => v + (Math.random() - 0.5) * 2 * s);
 
+// muscle strength per part
+const STR = { pelvis: 1.2, chest: 1.2, head: 1.0, uArmR: 1.5, lArmR: 1.4, uArmL: 0.9, lArmL: 0.8, thighL: 1, shinL: 0.9, thighR: 1, shinR: 0.9 };
+const _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _w = new THREE.Vector3();
+// capped velocity-domain PD toward a target orientation / position
+function driveAng(body, tq, k, maxW, acc, h) {
+  const r = body.rotation();
+  _q.set(r.x, r.y, r.z, r.w).invert().premultiply(tq);
+  if (_q.w < 0) _q.set(-_q.x, -_q.y, -_q.z, -_q.w);
+  const ang = 2 * Math.acos(Math.min(1, _q.w));
+  if (ang < 1e-4) _v.set(0, 0, 0);
+  else { const s = Math.sqrt(1 - _q.w * _q.w); _v.set(_q.x / s, _q.y / s, _q.z / s).multiplyScalar(Math.min(maxW, ang * k)); }
+  const av = body.angvel(); _w.set(av.x, av.y, av.z);
+  _v.sub(_w); const m = acc * h; if (_v.lengthSq() > m * m) _v.setLength(m);
+  body.setAngvel(_w.add(_v), true);
+}
+function driveLin(body, tp, ff, k, maxV, acc, h) {
+  const t = body.translation();
+  _v.set(tp.x - t.x, tp.y - t.y, tp.z - t.z).multiplyScalar(k).add(ff);
+  if (_v.length() > maxV) _v.setLength(maxV);
+  const lv = body.linvel(); _w.set(lv.x, lv.y, lv.z);
+  _v.sub(_w); const m = acc * h; if (_v.lengthSq() > m * m) _v.setLength(m);
+  body.setLinvel(_w.add(_v), true);
+}
+
 const tA = new THREE.Vector3(), tB = new THREE.Vector3(), tC = new THREE.Vector3(), tD = new THREE.Vector3();
 const qA = new THREE.Quaternion(), qB = new THREE.Quaternion();
 const eul = new THREE.Euler();
@@ -111,7 +136,7 @@ export class Enemy {
     const p = ctx.player.head;
     this.yaw = Math.atan2(p.x - pos.x, p.z - pos.z);
     this.state = 'fall'; this.stateT = 0;
-    this.hp = 170; this.dead = false;
+    this.hp = 220; this.dead = false;
     this.guard = (Math.random() * GUARDS.length) | 0; this.guardT = rnd(1, 3);
     this.pref = rnd(1.0, 1.8); this.prefT = rnd(1, 3);
     this.dodge = new THREE.Vector3();
@@ -152,15 +177,29 @@ export class Enemy {
     const w = phys.world;
     for (const part of Object.values(this.parts)) {
       const ps = this.pose[part.key];
-      part.body = w.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(ps.p.x, ps.p.y, ps.p.z).setRotation(ps.q));
-      const col = w.createCollider(hullDesc(G[part.type]).setCollisionGroups(GROUPS.ealive), part.body);
-      phys.info.set(col.handle, { kind: 'enemy', enemy: this, part: part.key });
+      part.body = w.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(ps.p.x, ps.p.y, ps.p.z).setRotation(ps.q)
+        .setLinearDamping(0.3).setAngularDamping(2.5).setCcdEnabled(true));
+      part.col = w.createCollider(hullDesc(G[part.type]).setDensity(985).setFriction(0.45).setCollisionGroups(GROUPS.ealive), part.body);
+      phys.info.set(part.col.handle, { kind: 'enemy', enemy: this, part: part.key });
     }
     const sp = this.pose.sword;
-    this.swordBody = w.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(sp.p.x, sp.p.y, sp.p.z).setRotation(sp.q));
-    const sc = w.createCollider(hullDesc(this.sword.bladeGeo).setCollisionGroups(GROUPS.esword), this.swordBody);
-    phys.info.set(sc.handle, { kind: 'esword', enemy: this });
-    this.applyPose();
+    this.swordBody = w.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(sp.p.x, sp.p.y, sp.p.z).setRotation(sp.q)
+      .setAngularDamping(2).setCcdEnabled(true));
+    this.swordCol = w.createCollider(hullDesc([this.sword.bladeGeo, this.sword.guardGeo, this.sword.gripGeo]).setDensity(3000).setCollisionGroups(GROUPS.esword), this.swordBody);
+    phys.info.set(this.swordCol.handle, { kind: 'esword', enemy: this });
+    // joints: each child hangs off its parent at the child's origin; the sword is held at the fist
+    this.joints = {};
+    for (const [a, b] of JOINTS) {
+      const pa = this.pose[a];
+      const anchor = new THREE.Vector3().subVectors(this.pose[b].p, pa.p).applyQuaternion(pa.q.clone().invert());
+      const j = w.createImpulseJoint(RAPIER.JointData.spherical(anchor, { x: 0, y: 0, z: 0 }), this.parts[a].body, this.parts[b].body, true);
+      j.setContactsEnabled(false);
+      this.joints[b] = j;
+    }
+    this.joints.sword = w.createImpulseJoint(RAPIER.JointData.spherical({ x: 0, y: -LARM, z: 0 }, { x: 0, y: 0, z: 0 }), this.parts.lArmR.body, this.swordBody, true);
+    this.joints.sword.setContactsEnabled(false);
+    this.tonus = 1; this.tonusTarget = 1;
+    this.syncMeshes();
 
     // landing marker
     this.marker = new THREE.Mesh(new THREE.RingGeometry(0.45, 0.6, 3).rotateX(-Math.PI / 2),
@@ -196,21 +235,32 @@ export class Enemy {
 
     switch (this.state) {
       case 'fall': {
-        this.vy -= 9.81 * adt; this.root.y += this.vy * adt;
         handT = [0.35, 2.05, 0.1]; bladeT = [0.3, 1, -0.2]; handK = 8;
         this.marker.material.opacity = 0.5 + 0.4 * Math.sin(performance.now() / 80);
-        if (this.root.y <= 0) {
-          this.root.y = 0;
-          ctx.onLand(this);
-          ctx.scene.remove(this.marker);
-          this.setState('land', 0.45);
-        }
         turn = 0;
         break;
       }
       case 'land': {
         crouch = 0.28 * (1 - this.stateT / this.stateDur);
+        this.tonusTarget = 1;
         if (this.stateT >= this.stateDur) this.setState('approach');
+        break;
+      }
+      case 'down': {
+        // limp on the floor; muscles almost off
+        turn = 0;
+        if (this.stateT >= this.stateDur) {
+          const pb = this.parts.pelvis.body.translation();
+          this.root.set(pb.x, 0, pb.z);
+          this.tonusTarget = 1;
+          this.setState('getup', 1.1);
+        }
+        break;
+      }
+      case 'getup': {
+        crouch = 0.35 * (1 - this.stateT / this.stateDur);
+        turn = 2;
+        if (this.stateT >= this.stateDur) { this.setState('approach'); this.atkCd = Math.max(this.atkCd, 0.4); }
         break;
       }
       case 'approach': {
@@ -357,7 +407,8 @@ export class Enemy {
     this.twist = THREE.MathUtils.lerp(this.twist ?? 0, twist, 1 - Math.exp(-12 * adt));
     this.crouch = crouch;
     this.computePose(adt);
-    this.applyPose();
+    this.bodyState(dt);
+    this.drive(dt);
   }
 
   // Each attack instance gets its own timing and slightly jittered path, so no two swings look identical.
@@ -450,25 +501,71 @@ export class Enemy {
     }
   }
 
-  applyPose() {
+  // "Muscles": every part chases its target-skeleton pose with capped velocity
+  // corrections (a PD drive with limited strength), all scaled by one tonus value.
+  drive(h) {
+    const T = this.tonus;
+    if (T < 0.01) return;
+    for (const part of Object.values(this.parts)) {
+      const ps = this.pose[part.key];
+      driveAng(part.body, ps.q, 16, 20, 320 * STR[part.key] * T, h);
+    }
+    const ff = tA.copy(this.vel).add(this.knock);
+    if (this.state !== 'fall') {
+      driveLin(this.parts.pelvis.body, this.pose.pelvis.p, ff, 9, 6, 55 * T, h);
+      driveLin(this.parts.chest.body, this.pose.chest.p, ff, 6, 5, 16 * T, h);
+    }
+    const sp = this.pose.sword;
+    driveAng(this.swordBody, sp.q, 26, 30, 1100 * T, h);
+    driveLin(this.swordBody, sp.p, ff, 14, 12, 90 * T, h);
+  }
+
+  // root follows the real body; detect knockdowns; landing from the drop
+  bodyState(dt) {
+    this.tonus += (this.tonusTarget - this.tonus) * (1 - Math.exp(-(this.tonusTarget > this.tonus ? 2.2 : 8) * dt));
+    const pb = this.parts.pelvis.body.translation();
+    if (this.state === 'fall') {
+      this.root.y = Math.max(0, pb.y - 0.92);
+      if (pb.y < 1.25) {
+        this.root.y = 0; this.ctx.onLand(this); this.ctx.scene.remove(this.marker);
+        this.tonus = 0.3; this.setState('land', 0.6);
+      }
+      return;
+    }
+    const dx = pb.x - this.root.x, dz = pb.z - this.root.z, d = Math.hypot(dx, dz);
+    if (d > 0.2) { const f = 1 - 0.2 / d; this.root.x += dx * f; this.root.z += dz * f; }
+    if (this.state === 'down' || this.state === 'getup') return;
+    const r = this.parts.chest.body.rotation();
+    const up = tB.set(0, 1, 0).applyQuaternion(qA.set(r.x, r.y, r.z, r.w));
+    if (pb.y < 0.5 || up.y < 0.3) this.knockDown(rnd(1.0, 1.6));
+  }
+
+  knockDown(t) {
+    this.setState('down', t);
+    this.tonusTarget = 0.08;
+    this.atk = null; this.atkPhase = null;
+    this.sword.bladeMat.emissive.setRGB(0, 0, 0);
+  }
+
+  syncMeshes() {
+    if (this.dead) return;
     const f = this.flash;
     for (const m of this.mats) m.emissive.setRGB(f, f, f);
     for (const part of Object.values(this.parts)) {
-      const ps = this.pose[part.key];
-      part.mesh.position.copy(ps.p); part.mesh.quaternion.copy(ps.q);
-      if (part.body) { part.body.setNextKinematicTranslation(ps.p); part.body.setNextKinematicRotation(ps.q); }
+      const t = part.body.translation(), r = part.body.rotation();
+      part.mesh.position.set(t.x, t.y, t.z); part.mesh.quaternion.set(r.x, r.y, r.z, r.w);
     }
-    const sp = this.pose.sword;
-    this.sword.group.position.copy(sp.p); this.sword.group.quaternion.copy(sp.q);
-    if (this.swordBody) { this.swordBody.setNextKinematicTranslation(sp.p); this.swordBody.setNextKinematicRotation(sp.q); }
+    const t = this.swordBody.translation(), r = this.swordBody.rotation();
+    this.sword.group.position.set(t.x, t.y, t.z); this.sword.group.quaternion.set(r.x, r.y, r.z, r.w);
   }
 
   // Enemy blade segment vs a capsule around the player's head/torso.
   checkPlayerHit() {
     const P = this.ctx.player;
-    const sp = this.pose.sword;
-    const a = tA.set(0, this.sword.baseY, 0).applyQuaternion(sp.q).add(sp.p);
-    const b = tB.set(0, this.sword.tipY, 0).applyQuaternion(sp.q).add(sp.p);
+    const st = this.swordBody.translation(), sr = this.swordBody.rotation();
+    const sq = qA.set(sr.x, sr.y, sr.z, sr.w), spos = tC.set(st.x, st.y, st.z);
+    const a = new THREE.Vector3(0, this.sword.baseY, 0).applyQuaternion(sq).add(spos);
+    const b = new THREE.Vector3(0, this.sword.tipY, 0).applyQuaternion(sq).add(spos);
     const segP = new THREE.Line3(a, b);
     const top = P.head, bot = new THREE.Vector3(P.head.x, P.head.y - 0.8, P.head.z);
     let best = Infinity;
@@ -497,7 +594,13 @@ export class Enemy {
       this.leanW.addScaledVector(axis, Math.min(9, hit.speed * (hit.part === 'head' ? 1.1 : 0.7)));
     }
     this.sword.bladeMat.emissive.setRGB(0, 0, 0);
-    if (this.state !== 'fall') this.setState('stagger', 0.3 + Math.min(0.3, hit.dmg / 150));
+    const body = this.parts[hit.part].body;
+    const imp = body.mass() * Math.min(hit.speed, 10) * 0.35;
+    body.applyImpulseAtPoint({ x: hit.dir.x * imp, y: hit.dir.y * imp * 0.5, z: hit.dir.z * imp }, hit.point, true);
+    this.tonus *= 0.5;
+    if (this.state === 'fall' || this.state === 'down' || this.state === 'getup') return;
+    if (hit.dmg > 45 && Math.random() < 0.35) this.knockDown(rnd(1.0, 1.6));
+    else this.setState('stagger', 0.3 + Math.min(0.3, hit.dmg / 150));
   }
 
   onClash(rel) {
@@ -515,21 +618,17 @@ export class Enemy {
 
   die(hit) {
     this.dead = true;
-    const ctx = this.ctx, w = phys.world, G = geos();
+    const ctx = this.ctx, w = phys.world;
     ctx.scene.remove(this.marker);
-    const base = new THREE.Vector3().copy(this.vel).add(this.knock);
-    const bodies = {};
     for (const part of Object.values(this.parts)) {
-      const ps = this.pose[part.key];
-      removeBody(part.body); part.body = null;
-      const body = w.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(ps.p.x, ps.p.y, ps.p.z).setRotation(ps.q)
-        .setLinearDamping(0.05).setAngularDamping(1.2));
-      w.createCollider(hullDesc(G[part.type]).setDensity(985).setFriction(0.8).setRestitution(0.05).setCollisionGroups(GROUPS.piece), body);
-      const f = Math.exp(-ps.p.distanceTo(hit.point) / 0.45);
-      const v = tA.copy(base).addScaledVector(hit.dir, Math.min(hit.speed, 11) * (part.key === hit.part ? 0.85 : 0.45 * f)).addScaledVector(UP, 1.2 * f);
-      body.setLinvel(v, true);
-      body.setAngvel({ x: (Math.random() - 0.5) * 8 * f, y: (Math.random() - 0.5) * 8 * f, z: (Math.random() - 0.5) * 8 * f }, true);
-      bodies[part.key] = body;
+      const body = part.body;
+      part.col.setCollisionGroups(GROUPS.piece);
+      body.setLinearDamping(0.05); body.setAngularDamping(1.2);
+      const t = body.translation();
+      const f = Math.exp(-tA.set(t.x, t.y, t.z).distanceTo(hit.point) / 0.45);
+      const v = body.linvel();
+      const add = tB.copy(hit.dir).multiplyScalar(Math.min(hit.speed, 11) * (part.key === hit.part ? 0.85 : 0.45 * f)).addScaledVector(UP, 1.2 * f);
+      body.setLinvel({ x: v.x + add.x, y: v.y + add.y, z: v.z + add.z }, true);
       ctx.pieces.add(part.mesh, body, 35);
     }
 
@@ -544,32 +643,23 @@ export class Enemy {
     while (cuts.size < 3) cuts.add(extra[(Math.random() * extra.length) | 0]);
 
     for (const [a, b] of JOINTS) {
-      const pa = bodies[a], pb = bodies[b];
-      const jp = this.pose[b].p;
-      if (cuts.has(b)) {
-        const out = tA.subVectors(jp, this.pose[a].p).normalize();
-        const v = pb.linvel();
-        pb.setLinvel({ x: v.x + out.x * 2 + (Math.random() - 0.5) * 2, y: v.y + 1.5 + Math.random() * 1.5, z: v.z + out.z * 2 + (Math.random() - 0.5) * 2 }, true);
-        pb.setAngvel({ x: (Math.random() - 0.5) * 16, y: (Math.random() - 0.5) * 16, z: (Math.random() - 0.5) * 16 }, true);
-        ctx.particles.emit('blood', jp, out, 18, 2.2);
-        ctx.pieces.shards(jp, out, 2, 0xb3001b, 2);
-        continue;
-      }
-      const qa = this.pose[a].q;
-      const anchor = tB.subVectors(jp, this.pose[a].p).applyQuaternion(qA.copy(qa).invert());
-      const j = w.createImpulseJoint(RAPIER.JointData.spherical({ x: anchor.x, y: anchor.y, z: anchor.z }, { x: 0, y: 0, z: 0 }), pa, pb, true);
-      j.setContactsEnabled(false);
+      if (!cuts.has(b)) continue;
+      const pb = this.parts[b].body, ta = this.parts[a].body.translation(), tb = pb.translation();
+      w.removeImpulseJoint(this.joints[b], true);
+      const jp = new THREE.Vector3(tb.x, tb.y, tb.z);
+      const out = tA.set(tb.x - ta.x, tb.y - ta.y, tb.z - ta.z).normalize();
+      const v = pb.linvel();
+      pb.setLinvel({ x: v.x + out.x * 2 + (Math.random() - 0.5) * 2, y: v.y + 1.5 + Math.random() * 1.5, z: v.z + out.z * 2 + (Math.random() - 0.5) * 2 }, true);
+      pb.setAngvel({ x: (Math.random() - 0.5) * 16, y: (Math.random() - 0.5) * 16, z: (Math.random() - 0.5) * 16 }, true);
+      ctx.particles.emit('blood', jp, out, 18, 2.2);
+      ctx.pieces.shards(jp, out, 2, 0xb3001b, 2);
     }
 
     // the sword drops as a loose physics piece
-    removeBody(this.swordBody); this.swordBody = null;
+    w.removeImpulseJoint(this.joints.sword, true);
     this.sword.bladeMat.emissive.setRGB(0, 0, 0);
-    const sp = this.pose.sword;
-    const sb = w.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(sp.p.x, sp.p.y, sp.p.z).setRotation(sp.q).setAngularDamping(0.8));
-    w.createCollider(hullDesc([this.sword.bladeGeo, this.sword.guardGeo, this.sword.gripGeo]).setDensity(3000).setFriction(0.6).setCollisionGroups(GROUPS.piece), sb);
-    sb.setLinvel({ x: base.x + hit.dir.x * 2, y: 1.5, z: base.z + hit.dir.z * 2 }, true);
-    sb.setAngvel({ x: Math.random() * 8 - 4, y: Math.random() * 8 - 4, z: Math.random() * 8 - 4 }, true);
-    ctx.pieces.add(this.sword.group, sb, 35);
+    this.swordCol.setCollisionGroups(GROUPS.piece);
+    ctx.pieces.add(this.sword.group, this.swordBody, 35);
 
     ctx.pieces.shards(hit.point, hit.dir, Math.min(hit.speed, 10), 0xd41f3a, 8);
     ctx.particles.emit('blood', hit.point, hit.dir, 70, 3.5);
@@ -580,10 +670,10 @@ export class Enemy {
 
   destroy() {
     for (const part of Object.values(this.parts)) {
-      if (part.body) removeBody(part.body);
+      removeBody(part.body);
       this.ctx.scene.remove(part.mesh);
     }
-    if (this.swordBody) removeBody(this.swordBody);
+    removeBody(this.swordBody);
     this.ctx.scene.remove(this.sword.group);
     this.ctx.scene.remove(this.marker);
     this.dead = true;
