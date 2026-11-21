@@ -346,7 +346,7 @@ const CHAINS = {
 // Enemy types. Andrew is the heavier, dual-wielding one.
 export const TYPES = {
   richard: { model: 'richard', hp: 500, cutMul: 1, bleedMul: 1, kdDmg: 75, kdChance: 0.25, str: 1, dual: false, weight: 0.65 },
-  andrew: { model: 'andrew', hp: 850, cutMul: 1.6, bleedMul: 0.55, kdDmg: 120, kdChance: 0.12, str: 1.35, dual: true, weight: 0.35 },
+  andrew: { model: 'andrew', headFloor: 0.7, hp: 850, cutMul: 1.6, bleedMul: 0.55, kdDmg: 120, kdChance: 0.12, str: 1.35, dual: true, weight: 0.35 },
   // Armoured duelist: one sword, very quick to read and block attacks on his unarmoured
   // spots, but never bothers defending where his armour is (even once it's broken off).
   prisoner: {
@@ -354,9 +354,9 @@ export const TYPES = {
     walk: 1.3, stride: 1.1, duelist: true, regen: true,
     armor: { chest: { hp: 280, segs: 8 }, pelvis: { hp: 170, segs: 6 }, uArmL: { hp: 110, segs: 4 }, uArmR: { hp: 110, segs: 4 }, thighL: { hp: 140, segs: 4 }, thighR: { hp: 140, segs: 4 } },
   },
-  // Scavenger: welds loose limbs, swords and armour plates onto himself. Limbs heal and
-  // toughen him; swords become blades for a spinning whirl attack.
-  stitcher: { model: null, hp: 700, cutMul: 1.2, bleedMul: 0.8, kdDmg: 100, kdChance: 0.15, str: 1.25, dual: false, weight: 0.17, walk: 1.6, stitcher: true, colors: [0x9fae95, 0x5b6655], eyes: 0x7dff6a },
+  // Pilot: picks up the swords of the dead. Each sword he takes makes its owner's corpse
+  // pull itself back together and stand up again; killing him stops it.
+  pilot: { model: 'pilot', hp: 650, cutMul: 1.2, bleedMul: 0.8, kdDmg: 100, kdChance: 0.15, str: 1.25, dual: false, weight: 0.17, walk: 1.7, pilot: true },
 };
 for (const [k, t] of Object.entries(TYPES)) t.name = k;
 const CUT_DMG = 60, HEAD_CUT_DMG = 120; // decapitation needs a really clean, hard cut
@@ -405,20 +405,21 @@ function twoBone(root, target, l1, l2, pole, outMid, outEnd) {
 }
 
 export class Enemy {
-  constructor(ctx, pos, typeName = 'richard') {
+  constructor(ctx, pos, typeName = 'richard', opts = {}) {
     this.ctx = ctx;
     this.type = TYPES[typeName] || TYPES.richard;
     this.model = this.type.model === null ? null : (MODELS[this.type.model] || MODELS.richard || null);
     this.rig = this.model ? this.model.rig : DEFAULT_RIG;
-    this.root = new THREE.Vector3(pos.x, 9, pos.z);
+    this.root = new THREE.Vector3(pos.x, opts.revive ? 0 : 9, pos.z);
     this.vy = 0;
     this.vel = new THREE.Vector3();
     this.knock = new THREE.Vector3();
     this.lean = new THREE.Vector3(); this.leanW = new THREE.Vector3();
     const p = ctx.player.head;
     this.yaw = Math.atan2(p.x - pos.x, p.z - pos.z);
-    this.state = 'fall'; this.stateT = 0;
-    this.hp = this.type.hp * settings.enemyToughness; this.dead = false;
+    this.state = opts.revive ? 'getup' : 'fall'; this.stateT = 0; this.stateDur = 0.8;
+    if (opts.revive) this.yaw = opts.revive.yaw;
+    this.hp = this.type.hp * settings.enemyToughness * (opts.revive ? 0.6 : 1); this.dead = false;
     this.voice = rnd(0.82, 1.18);
     this.guard = (Math.random() * GUARDS.length) | 0; this.guardT = rnd(1, 3);
     this.pref = rnd(1.0, 1.8); this.prefT = rnd(1, 3);
@@ -442,7 +443,7 @@ export class Enemy {
       ? MODEL.mats.map(m => { const c = m.clone(); c.emissive = new THREE.Color(0); return c; })
       : [lambert(this.type.colors ? this.type.colors[0] : 0xd41f3a, { emissive: 0x000000 }), lambert(this.type.colors ? this.type.colors[1] : 0x8f1024, { emissive: 0x000000 })];
     this.eyeMat = new THREE.MeshBasicMaterial({ color: this.type.eyes || 0xffd23a });
-    this.stitched = []; this.whirlCd = 2; this.scavT = 0;
+    this.stitched = []; this.scavT = 0; this.corpse = {}; this.revivals = [];
     const partGeos = (key, type) => (MODEL ? MODEL.geos[key].map(e => e.geo) : geos()[type]);
     const partMats = (key, slot) => (MODEL ? MODEL.geos[key].map(e => this.mats[e.mat]) : null);
     this.parts = {};
@@ -629,10 +630,9 @@ export class Enemy {
         else want.copy(right).multiplyScalar(this.strafe * rnd(0.5, 0.9));
         if (this.atkCd <= 0 && dist < 1.75 && this.canFight) this.startAttack(Math.random() < 0.65 ? 'forehand' : 'backhand');
         if (this.state === 'approach') this.reactToThreat(toP, right);
-        if (this.type.stitcher && this.state === 'approach') {
-          this.whirlCd -= adt; this.scavT -= adt;
-          if (this.stitched.some(x => x.sword) && dist < 1.8 && this.whirlCd <= 0) { this.setState('whirl', 1.4); this.whirlHits = new Map(); sfx.grunt(0.9, this.voice * 0.8); }
-          else if (this.scavT <= 0 && dist > 2.0 && this.stitched.length < 8) {
+        if (this.type.pilot && this.state === 'approach') {
+          this.scavT -= adt;
+          if (this.scavT <= 0 && dist > 2.0 && this.stitched.length < 6) {
             this.scavT = 0.5;
             const item = this.findScrap();
             if (item) { this.scrap = item; this.setState('scavenge', 10); }
@@ -732,14 +732,6 @@ export class Enemy {
           this.reachT = (this.reachT || 0) + adt;
           if (this.reachT > 0.6) { this.stitch(it); this.scavT = 0.8; this.setState('approach'); }
         }
-        break;
-      }
-      case 'whirl': {
-        // spin on the spot so every stitched blade sweeps around
-        this.yaw += 11 * adt; turn = 0; handT = [0.5, 1.45, 0.1]; bladeT = [1, 0.2, 0]; handK = 20;
-        want.copy(toP).normalize().multiplyScalar(dist > 1 ? 1.2 : 0);
-        this.whirlDamage();
-        if (this.stateT >= this.stateDur) { this.whirlCd = rnd(3, 5); this.setState('approach'); }
         break;
       }
       case 'dodge': {
@@ -876,6 +868,7 @@ export class Enemy {
     this.drive(dt);
     if (this.crippled && !this.type.regen) this.updateThrow(dt);
     if (this.type.regen) this.updateRegen(dt);
+    if (this.revivals.length) this.updateRevivals(dt);
   }
 
   // read the player's blade (predicted ~0.2 s ahead) and block or dodge if it is coming at us
@@ -948,6 +941,12 @@ export class Enemy {
           if (!p.loose || p.thrownBy) continue;
           const t = p.body.translation(), d = sh.distanceTo(tA.set(t.x, t.y, t.z));
           if (d < bd) { bd = d; best = p; }
+        }
+        if (best && !best.limb && !best.sword && !best.plate && !best.rubble) {
+          // a small blood shard: grab a full-size bloody chunk instead
+          const t = best.body.translation();
+          ctx.pieces.remove(best);
+          best = ctx.pieces.rubble(new THREE.Vector3(t.x, Math.max(0.08, t.y), t.z), 0xb3001b);
         }
         T.obj = best || ctx.pieces.rubble(new THREE.Vector3(hand.x, 0.06, hand.z));
         T.obj.thrownBy = this;
@@ -1127,11 +1126,13 @@ export class Enemy {
   // corrections (a PD drive with limited strength), all scaled by one tonus value.
   drive(h) {
     const T = this.tonus;
-    if (T < 0.01) return;
+    if (T < 0.01 && !this.type.headFloor) return;
     for (const part of Object.values(this.parts)) {
       const ps = this.pose[part.key];
       if (this.lost.has(part.key)) continue;
-      driveAng(part.body, ps.q, 24, 26, 700 * STR[part.key] * this.type.str * T, h);
+      // some necks stay strong even when the body goes limp (Andrew's head no longer sinks in)
+      const Tp = part.key === 'head' && this.type.headFloor ? Math.max(T, this.type.headFloor) : T;
+      driveAng(part.body, ps.q, 24, 26, 700 * STR[part.key] * this.type.str * Tp, h);
     }
     const ff = tA.copy(this.vel).add(this.knock);
     if (this.state !== 'fall' && this.state !== 'leap' && !this.unsupported) {
@@ -1200,7 +1201,7 @@ export class Enemy {
   findScrap() {
     let best = null, bd = 10;
     for (const p of this.ctx.pieces.list) {
-      if (!(p.limb || p.sword || p.plate) || p.thrownBy || p.removed || p.inFlight) continue;
+      if (!p.sword || !p.owner || !p.owner.revivable() || p.thrownBy || p.removed || p.inFlight) continue;
       const t = p.body.translation(), d = Math.hypot(t.x - this.root.x, t.z - this.root.z);
       if (d < bd) { bd = d; best = p; }
     }
@@ -1228,7 +1229,7 @@ export class Enemy {
     const item = { entry, joint, col, sword: entry.sword || null };
     this.stitched.push(item);
     phys.info.set(col.handle, { kind: 'stitched', enemy: this, item });
-    if (!item.sword) this.hp += 60; // a fresh limb patches him up
+    if (entry.owner && entry.owner.revivable()) this.startRevival(entry.owner, item);
     this.flash = 0.5;
     ctx.particles.emit('spark', pos, null, 14, 1.5);
     sfx.thump(0.5); sfx.grunt(0.6, this.voice * 0.85);
@@ -1249,25 +1250,85 @@ export class Enemy {
     }
   }
 
-  // stitched blades hurt the player while spinning
-  whirlDamage() {
-    const P = this.ctx.player;
-    const top = P.head, bot = tB.set(P.head.x, P.head.y - 0.8, P.head.z);
-    for (const it of this.stitched) {
-      if (!it.sword || (this.whirlHits.get(it) || 0) > this.stateT) continue;
-      const b = it.entry.body, t = b.translation(), r = b.rotation(), q = qA.set(r.x, r.y, r.z, r.w);
-      const a = new THREE.Vector3(0, it.sword.baseY, 0).applyQuaternion(q).add(tC.set(t.x, t.y, t.z));
-      const e = new THREE.Vector3(0, it.sword.tipY, 0).applyQuaternion(q).add(tC.set(t.x, t.y, t.z));
-      const seg = new THREE.Line3(a, e);
-      for (let i = 0; i <= 4; i++) {
-        const pt = new THREE.Vector3().lerpVectors(top, bot, i / 4);
-        if (seg.closestPointToPoint(pt, true, new THREE.Vector3()).distanceTo(pt) < (i === 0 ? 0.12 : 0.18)) {
-          this.whirlHits.set(it, this.stateT + 0.6);
-          this.ctx.damagePlayer(6, this); sfx.clang(0.5);
-          break;
-        }
+  // ---- resurrection (pilot) ----
+  // can this corpse still be put back together? (its core pieces must still exist)
+  revivable() {
+    if (!this.dead || this.reviving || this.revived) return false;
+    const c = this.corpse;
+    return ['pelvis', 'chest'].every(k => c[k] && !c[k].removed && bodyAlive(c[k].body));
+  }
+
+  startRevival(corpse, item) {
+    corpse.reviving = this;
+    const ctx = this.ctx;
+    const pt = corpse.corpse.pelvis.body.translation();
+    // the pose it will stand back up in, facing the player
+    corpse.root.set(pt.x, 0, pt.z);
+    corpse.yaw = Math.atan2(ctx.player.head.x - pt.x, ctx.player.head.z - pt.z);
+    corpse.vel.set(0, 0, 0); corpse.knock.set(0, 0, 0); corpse.lean.set(0, 0, 0); corpse.crouch = 0; corpse.leanF = 0.1; corpse.twist = 0;
+    corpse.state = 'approach'; corpse.computePose(0);
+    const parts = [];
+    for (const [k, e] of Object.entries(corpse.corpse)) {
+      if (!e || e.removed || !bodyAlive(e.body)) continue;
+      ctx.pieces.detach(e);
+      e.body.setGravityScale(0, true); e.body.setAngularDamping(3);
+      e.body.collider(0).setCollisionGroups(GROUPS.returning);
+      parts.push({ key: k, entry: e });
+    }
+    this.revivals.push({ corpse, parts, item, t: 0 });
+    ctx.particles.emit('spark', new THREE.Vector3(pt.x, 0.5, pt.z), null, 20, 2);
+    sfx.glitch();
+  }
+
+  updateRevivals(h) {
+    for (const r of this.revivals.slice()) {
+      r.t += h;
+      let far = 0;
+      for (const { key, entry } of r.parts) {
+        if (!bodyAlive(entry.body)) continue;
+        const tp = r.corpse.pose[key], b = entry.body, t = b.translation();
+        const d = tA.set(tp.p.x - t.x, tp.p.y - t.y, tp.p.z - t.z), dist = d.length();
+        far = Math.max(far, dist);
+        const lv = b.linvel(), want = d.normalize().multiplyScalar(Math.min(3.5, dist * 3));
+        const dv = tB.set(want.x - lv.x, want.y - lv.y, want.z - lv.z); const m = 8 * h;
+        if (dv.lengthSq() > m * m) dv.setLength(m);
+        b.setLinvel({ x: lv.x + dv.x, y: lv.y + dv.y, z: lv.z + dv.z }, true);
+        driveAng(b, tp.q, 10, 8, 80, h);
+      }
+      if (far < 0.2 || r.t > 9) this.finishRevival(r);
+    }
+  }
+
+  // the pieces have come together: the corpse is swapped for a fresh, living copy
+  finishRevival(r) {
+    const ctx = this.ctx, c = r.corpse;
+    this.revivals.splice(this.revivals.indexOf(r), 1);
+    for (const { entry } of r.parts) { removeBody(entry.body); ctx.scene.remove(entry.mesh); entry.removed = true; }
+    // his sword was in the pilot's hands; the new body brings its own
+    if (r.item && this.stitched.includes(r.item)) {
+      this.unstitch(r.item);
+      ctx.pieces.remove(r.item.entry);
+    }
+    c.revived = true;
+    const e = new Enemy(ctx, c.root, c.type.name, { revive: { yaw: c.yaw } });
+    ctx.enemies.push(e);
+    ctx.particles.emit('spark', c.root.clone().setY(1.2), null, 30, 3);
+    sfx.thump(0.8); sfx.grunt(1, e.voice);
+    if (ctx.onRevive) ctx.onRevive(e);
+  }
+
+  // the pilot died: whatever he was raising collapses back into debris
+  abortRevivals() {
+    for (const r of this.revivals) {
+      r.corpse.reviving = null;
+      for (const { entry } of r.parts) {
+        if (!bodyAlive(entry.body)) continue;
+        entry.body.setGravityScale(1, true); entry.body.setAngularDamping(1.2);
+        entry.body.collider(0).setCollisionGroups(GROUPS.piece);
+        entry.age = 0; this.ctx.pieces.list.push(entry);
       }
     }
+    this.revivals = [];
   }
 
   syncMeshes() {
@@ -1463,7 +1524,7 @@ export class Enemy {
         continue;
       }
       if (ar && ar.col) { phys.info.delete(ar.col.handle); ar.col.setCollisionGroups(GROUPS.piece); ar.col = null; ar.hp = 0; }
-      ctx.pieces.add(part.mesh, part.body, 35, { loose: true, limb: true });
+      this.corpse[k] = ctx.pieces.add(part.mesh, part.body, 35, { loose: true, limb: true });
     }
     if (this.type.regen) this.returning.set(key, { t: 0 });
     const imp = kb.mass() * Math.min(hit.speed, 10) * 0.5;
@@ -1494,7 +1555,7 @@ export class Enemy {
     };
     for (const [key, st] of this.returning) {
       st.t += h;
-      if (st.t < 1.2) continue; // let it fly off first
+      if (st.t < 0.5) continue; // let it fly off first
       const bd = this.bind[key];
       if (this.lost.has(bd.parent)) continue;
       const pb = this.parts[bd.parent].body, kb = this.parts[key].body;
@@ -1502,18 +1563,18 @@ export class Enemy {
       const target = new THREE.Vector3().copy(bd.anchor).applyQuaternion(qB.set(pr.x, pr.y, pr.z, pr.w)).add(tC.set(pt.x, pt.y, pt.z));
       const kt = kb.translation();
       kb.setAngularDamping(4);
-      if (steer(kb, new THREE.Vector3(kt.x, kt.y, kt.z), target, 1.5) < 0.15) this.reattach(key);
+      if (steer(kb, new THREE.Vector3(kt.x, kt.y, kt.z), target, 3.2) < 0.15) this.reattach(key);
     }
     if (this.swordOwned && !this.lost.has('lArmR')) {
       this.swordReturnT += h;
-      if (this.swordReturnT > 1.2) {
+      if (this.swordReturnT > 0.5) {
         const lb = this.parts.lArmR.body, lt = lb.translation(), lr = lb.rotation();
         const lq = qB.set(lr.x, lr.y, lr.z, lr.w);
         const wrist = new THREE.Vector3(0, -(this.rig.LARM + PALM), 0).applyQuaternion(lq).add(tC.set(lt.x, lt.y, lt.z));
         const st = this.swordBody.translation(), sr = this.swordBody.rotation();
         const mount = new THREE.Vector3(0, -MOUNT, 0).applyQuaternion(qA.set(sr.x, sr.y, sr.z, sr.w)).add(tC.set(st.x, st.y, st.z));
         this.swordBody.setAngularDamping(4);
-        if (steer(this.swordBody, mount, wrist, 1.8) < 0.15) this.reattachSword();
+        if (steer(this.swordBody, mount, wrist, 3.5) < 0.15) this.reattachSword();
       }
     }
   }
@@ -1574,7 +1635,7 @@ export class Enemy {
     this.armed2 = false;
     phys.world.removeImpulseJoint(this.joints.sword2, true);
     this.sword2Col.setCollisionGroups(GROUPS.piece);
-    this.ctx.pieces.add(this.sword2.group, this.sword2Body, 45, { loose: true, sword: this.sword2 });
+    this.ctx.pieces.add(this.sword2.group, this.sword2Body, 45, { loose: true, sword: this.sword2, owner: this });
   }
 
   dropSword() {
@@ -1585,12 +1646,13 @@ export class Enemy {
     this.swordCol.setCollisionGroups(GROUPS.piece);
     if (this.type.regen && !this.dead) { this.swordCol.setCollisionGroups(GROUPS.returning); this.swordOwned = true; this.swordReturnT = 0; phys.info.set(this.swordCol.handle, { kind: 'piece' }); return; }
     this.swordOwned = false;
-    this.ctx.pieces.add(this.sword.group, this.swordBody, 45, { loose: true, sword: this.sword });
+    this.ctx.pieces.add(this.sword.group, this.swordBody, 45, { loose: true, sword: this.sword, owner: this });
   }
 
   die(hit) {
     this.dead = true;
     const ctx = this.ctx, w = phys.world;
+    this.abortRevivals();
     for (const it of this.stitched.slice()) this.unstitch(it);
     if (this.type.regen) {
       // whatever was still crawling back is just debris now
@@ -1611,7 +1673,7 @@ export class Enemy {
       const v = body.linvel();
       const add = tB.copy(hit.dir).multiplyScalar(Math.min(hit.speed, 11) * (part.key === hit.part ? 0.85 : 0.45 * f)).addScaledVector(UP, 1.2 * f);
       body.setLinvel({ x: v.x + add.x, y: v.y + add.y, z: v.z + add.z }, true);
-      ctx.pieces.add(part.mesh, body, 35);
+      this.corpse[part.key] = ctx.pieces.add(part.mesh, body, 35);
     }
 
     // choose which joints to cut: the struck part always comes off, plus a few more
@@ -1648,6 +1710,7 @@ export class Enemy {
   }
 
   destroy() {
+    this.abortRevivals();
     for (const it of this.stitched) { removeBody(it.entry.body); this.ctx.scene.remove(it.entry.mesh); }
     this.stitched = [];
     // severed limbs and a dropped sword already belong to the pieces list, which clears them

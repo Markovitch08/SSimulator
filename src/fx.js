@@ -86,6 +86,7 @@ export class Pieces {
   add(mesh, body, life = 30, meta = {}) {
     const entry = { mesh, body, age: 0, life, base: mesh.scale.clone(), ...meta };
     this.list.push(entry);
+    return entry;
     phys.info.set(body.collider(0).handle, { kind: 'piece' });
     while (this.list.length > MAX_PIECES) this.remove(this.list[0]);
   }
