@@ -31,7 +31,7 @@ jobs:
           V=${GITHUB_SHA::8}
           sed -i "s#src/main.js#src/main.js?v=$V#" _site/index.html
           sed -i -E "s#(from '\./[A-Za-z0-9_-]+\.js)'#\1?v=$V'#g" _site/src/*.js
-          sed -i "s#models/richard.glb#models/richard.glb?v=$V#" _site/src/main.js
+          sed -i -E "s#models/([a-z]+)\.glb#models/\1.glb?v=$V#g" _site/src/main.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

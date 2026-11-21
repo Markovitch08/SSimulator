@@ -49,16 +49,17 @@ const JOINTS = [
 
 // Rig proportions. Defaults fit the procedural body; loadEnemyModel() replaces them with
 // measurements taken from a skinned model's skeleton.
-const RIG = {
+const DEFAULT_RIG = {
   pelvisH: 0.92, chest: [0, 0.08, 0], head: [0, 0.5, 0], shoulder: [0.22, 0.44, 0], hip: [0.1, -0.07, 0],
   UARM: 0.3, LARM: 0.29, THIGH: 0.44, SHIN: 0.44, ankleY: 0.06,
 };
-let MODEL = null; // { geos: {partKey: geometry}, map }
+// loaded models: name -> { geos: {partKey: [{ geo, mat }]}, mats: [Material], rig }
+export const MODELS = {};
 
 // Cut a skinned humanoid (glTF) into the 11 rigid ragdoll parts by dominant bone weight,
 // re-expressed in each part's local frame (origin at the proximal joint, limb along -Y,
 // +Z forward), and measure the rig from its bones.
-export async function loadEnemyModel(url, targetHeight = 1.85) {
+export async function loadEnemyModel(name, url, targetHeight = 1.85) {
   const gltf = await new GLTFLoader().loadAsync(url);
   gltf.scene.updateMatrixWorld(true);
   let mesh = null;
@@ -153,12 +154,13 @@ export async function loadEnemyModel(url, targetHeight = 1.85) {
     g.setAttribute('position', new THREE.Float32BufferAttribute(d.pos, 3));
     if (d.uv.length) g.setAttribute('uv', new THREE.Float32BufferAttribute(d.uv, 2));
     g.computeVertexNormals();
-    geos[k] = g;
+    geos[k] = [{ geo: g, mat: 0 }];
   }
   const map = mesh.material.map || null;
   if (map) { map.magFilter = THREE.NearestFilter; map.needsUpdate = true; }
 
   const rel = (a, b) => a.clone().sub(b).toArray();
+  const RIG = {};
   Object.assign(RIG, {
     pelvisH: P0.y - 0.03, chest: rel(C0, P0), head: rel(H0, C0),
     shoulder: [Math.abs(J.shR.x - C0.x), J.shR.y - C0.y, J.shR.z - C0.z],
@@ -166,8 +168,127 @@ export async function loadEnemyModel(url, targetHeight = 1.85) {
     UARM: J.shR.distanceTo(J.elR), LARM: J.elR.distanceTo(J.haR),
     THIGH: J.hipR.distanceTo(J.knR), SHIN: J.knR.distanceTo(J.anR), ankleY: J.anR.y,
   });
-  MODEL = { geos, map };
-  return RIG;
+  MODELS[name] = { geos, mats: [new THREE.MeshLambertMaterial({ map, flatShading: true })], rig: RIG };
+  return MODELS[name];
+}
+
+// For models with no skeleton (static meshes in a relaxed A/T pose): find landmarks from
+// the shape (hands = lowest/outermost arm points, ankles = shoe tops, ...), fit the same
+// skeleton, and give each triangle to the nearest bone segment allowed for its mesh.
+// opts.roles: mesh index -> 'head' | 'torso' | 'arms' | 'legs' | 'feet'; opts.facing: -1 if
+// the model faces -Z.
+export async function loadStaticModel(name, url, opts, targetHeight = 1.85) {
+  const gltf = await new GLTFLoader().loadAsync(url);
+  gltf.scene.updateMatrixWorld(true);
+  const meshes = [];
+  gltf.scene.traverse(o => { if (o.isMesh) meshes.push(o); });
+  const all = [];
+  const src = meshes.map((m, mi) => {
+    const pos = m.geometry.attributes.position, verts = [];
+    for (let i = 0; i < pos.count; i++) { const v = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld); verts.push(v); all.push(v); }
+    return { mesh: m, verts, role: opts.roles[mi] };
+  });
+  const box = new THREE.Box3().setFromPoints(all);
+  const sc = targetHeight / (box.max.y - box.min.y);
+  const off = new THREE.Vector3((box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2);
+  for (const v of all) { v.sub(off).multiplyScalar(sc); if (opts.facing === -1) { v.x = -v.x; v.z = -v.z; } }
+  const byRole = r => src.filter(m => m.role === r).flatMap(m => m.verts);
+  const head = byRole('head'), arms = byRole('arms'), legs = byRole('legs'), feet = byRole('feet'), torso = byRole('torso');
+  const mean = vs => vs.reduce((a, v) => a.add(v), new THREE.Vector3()).divideScalar(vs.length);
+  const extreme = (vs, f) => vs.reduce((a, v) => (f(v) > f(a) ? v : a));
+
+  const neckY = Math.min(...head.map(v => v.y)), topY = Math.max(...head.map(v => v.y));
+  const headC = mean(head);
+  const pantsTop = Math.max(...legs.map(v => v.y));
+  const hipY = pantsTop - 0.13;
+  const torsoZ = mean(legs.filter(v => v.y > pantsTop - 0.1)).z;
+  const J = {};
+  for (const [S, sg] of [['L', 1], ['R', -1]]) {
+    const side = arms.filter(v => Math.sign(v.x) === sg);
+    const tip = extreme(side, v => -v.y);                      // fingertips: lowest point of the arm
+    // shoulder: the arm mesh may start below a sleeve, so measure the torso just under the neck
+    const band = torso.filter(v => Math.sign(v.x) === sg && v.y > neckY - 0.16 && v.y < neckY - 0.06);
+    const outer = band.length ? Math.max(...band.map(v => Math.abs(v.x))) : 0.2;
+    const sh = new THREE.Vector3(sg * outer * 0.78, neckY - 0.1, band.length ? mean(band).z : torsoZ);
+    const palm = tip.clone().addScaledVector(sh.clone().sub(tip).normalize(), 0.08);
+    const el = sh.clone().lerp(palm, 0.5); el.z -= 0.03;
+    const shoe = feet.filter(v => Math.sign(v.x) === sg);
+    const an = new THREE.Vector3(mean(shoe).x, Math.max(...shoe.map(v => v.y)) + 0.02, mean(shoe).z - 0.03);
+    const hip = new THREE.Vector3(sg * THREE.MathUtils.clamp(Math.abs(an.x), 0.08, 0.11), hipY, torsoZ);
+    const kn = hip.clone().lerp(an, 0.5); kn.z += 0.03;
+    Object.assign(J, { ['sh' + S]: sh, ['ha' + S]: palm, ['tip' + S]: tip, ['el' + S]: el, ['hip' + S]: hip, ['kn' + S]: kn, ['an' + S]: an });
+  }
+  const P0 = new THREE.Vector3(0, hipY + 0.05, torsoZ), C0 = new THREE.Vector3(0, hipY + 0.17, torsoZ);
+  const H0 = new THREE.Vector3(headC.x, neckY, headC.z);
+  const fwd = new THREE.Vector3(0, 0, 1);
+  const frames = { pelvis: [P0, new THREE.Quaternion()], chest: [C0, new THREE.Quaternion()], head: [H0, new THREE.Quaternion()] };
+  const segs = { pelvis: [P0.clone().setY(hipY - 0.05), C0, 0.15], chest: [C0, H0, 0.17], head: [H0, new THREE.Vector3(H0.x, topY, H0.z), 0.1] };
+  for (const S of ['L', 'R']) {
+    frames['uArm' + S] = [J['sh' + S], basisQuat(J['sh' + S].clone().sub(J['el' + S]), fwd, new THREE.Quaternion())];
+    frames['lArm' + S] = [J['el' + S], basisQuat(J['el' + S].clone().sub(J['ha' + S]), fwd, new THREE.Quaternion())];
+    frames['thigh' + S] = [J['hip' + S], basisQuat(J['hip' + S].clone().sub(J['kn' + S]), fwd, new THREE.Quaternion())];
+    frames['shin' + S] = [J['kn' + S], basisQuat(J['kn' + S].clone().sub(J['an' + S]), fwd, new THREE.Quaternion())];
+    segs['uArm' + S] = [J['sh' + S], J['el' + S], 0.06];
+    segs['lArm' + S] = [J['el' + S], J['tip' + S], 0.05];
+    segs['thigh' + S] = [J['hip' + S], J['kn' + S], 0.08];
+    segs['shin' + S] = [J['kn' + S], J['an' + S].clone().setY(0), 0.06];
+  }
+  const allowed = {
+    head: ['head'], torso: ['chest', 'pelvis', 'uArmL', 'uArmR'], arms: ['uArmL', 'uArmR', 'lArmL', 'lArmR', 'chest'],
+    legs: ['pelvis', 'thighL', 'thighR', 'shinL', 'shinR'], feet: ['shinL', 'shinR'],
+  };
+  // materials (one per source mesh), kept close to the originals but flat-shaded
+  const mats = src.map(({ mesh }) => {
+    const m = mesh.material;
+    return new THREE.MeshLambertMaterial({ map: m.map || null, color: m.color ? m.color.clone() : 0xffffff, vertexColors: !!mesh.geometry.attributes.color, flatShading: true });
+  });
+  const out = {}; // part -> mat index -> {pos, uv, col}
+  const line = new THREE.Line3(), cp = new THREE.Vector3(), cen = new THREE.Vector3();
+  src.forEach(({ mesh, verts, role }, mi) => {
+    const g = mesh.geometry, uv = g.attributes.uv, col = g.attributes.color;
+    const idx = g.index ? g.index.array : [...Array(verts.length).keys()];
+    for (let t = 0; t < idx.length; t += 3) {
+      cen.copy(verts[idx[t]]).add(verts[idx[t + 1]]).add(verts[idx[t + 2]]).divideScalar(3);
+      let best = null, bd = Infinity;
+      for (const k of allowed[role] || Object.keys(segs)) {
+        const [a, b, r] = segs[k];
+        const d = line.set(a, b).closestPointToPoint(cen, true, cp).distanceTo(cen) - r;
+        if (d < bd) { bd = d; best = k; }
+      }
+      const [o, q] = frames[best];
+      const qi = q.clone().invert();
+      const bucket = ((out[best] ||= {})[mi] ||= { pos: [], uv: [], col: [] });
+      for (let c = 0; c < 3; c++) {
+        const v = idx[t + c];
+        const l = verts[v].clone().sub(o).applyQuaternion(qi);
+        bucket.pos.push(l.x, l.y, l.z);
+        if (uv) bucket.uv.push(uv.getX(v), uv.getY(v));
+        if (col) bucket.col.push(col.getX(v), col.getY(v), col.getZ(v));
+      }
+    }
+  });
+  const geos = {};
+  for (const k of Object.keys(frames)) {
+    if (!out[k]) throw new Error('static model: no triangles for ' + k);
+    geos[k] = Object.entries(out[k]).map(([mi, d]) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(d.pos, 3));
+      if (d.uv.length) g.setAttribute('uv', new THREE.Float32BufferAttribute(d.uv, 2));
+      if (d.col.length) g.setAttribute('color', new THREE.Float32BufferAttribute(d.col, 3));
+      g.computeVertexNormals();
+      return { geo: g, mat: +mi };
+    });
+  }
+  const rel = (a, b) => a.clone().sub(b).toArray();
+  const rig = {
+    pelvisH: P0.y - 0.03, chest: rel(C0, P0), head: rel(H0, C0),
+    shoulder: [Math.abs(J.shR.x - C0.x), J.shR.y - C0.y, J.shR.z - C0.z],
+    hip: [Math.abs(J.hipR.x - P0.x), J.hipR.y - P0.y, J.hipR.z - P0.z],
+    UARM: J.shR.distanceTo(J.elR), LARM: J.elR.distanceTo(J.haR),
+    THIGH: J.hipR.distanceTo(J.knR), SHIN: J.knR.distanceTo(J.anR), ankleY: J.anR.y,
+  };
+  MODELS[name] = { geos, mats, rig };
+  return MODELS[name];
 }
 
 // Move set: two flowing slashes. Each is a smooth curve for the hand and the blade
@@ -209,8 +330,13 @@ const smooth = t => t * t * (3 - 2 * t);
 
 // what comes off when a joint is cut while alive
 const CHAINS = {
-  head: ['head'], uArmL: ['uArmL', 'lArmL'], lArmL: ['lArmL'], uArmR: ['uArmR', 'lArmR', 'sword'], lArmR: ['lArmR', 'sword'],
+  head: ['head'], uArmL: ['uArmL', 'lArmL', 'sword2'], lArmL: ['lArmL', 'sword2'], uArmR: ['uArmR', 'lArmR', 'sword'], lArmR: ['lArmR', 'sword'],
   thighL: ['thighL', 'shinL'], shinL: ['shinL'], thighR: ['thighR', 'shinR'], shinR: ['shinR'],
+};
+// Enemy types. Andrew is the heavier, dual-wielding one.
+export const TYPES = {
+  richard: { model: 'richard', hp: 500, cutMul: 1, bleedMul: 1, kdDmg: 75, kdChance: 0.25, str: 1, dual: false, weight: 0.65 },
+  andrew: { model: 'andrew', hp: 850, cutMul: 1.6, bleedMul: 0.55, kdDmg: 120, kdChance: 0.12, str: 1.35, dual: true, weight: 0.35 },
 };
 const CUT_DMG = 60, HEAD_CUT_DMG = 100; // decapitation needs a really clean, hard cut
 // sword mount: a steel plate under the pommel sits on a ball joint just past the wrist
@@ -258,8 +384,11 @@ function twoBone(root, target, l1, l2, pole, outMid, outEnd) {
 }
 
 export class Enemy {
-  constructor(ctx, pos) {
+  constructor(ctx, pos, typeName = 'richard') {
     this.ctx = ctx;
+    this.type = TYPES[typeName] || TYPES.richard;
+    this.model = MODELS[this.type.model] || MODELS.richard || null;
+    this.rig = this.model ? this.model.rig : DEFAULT_RIG;
     this.root = new THREE.Vector3(pos.x, 9, pos.z);
     this.vy = 0;
     this.vel = new THREE.Vector3();
@@ -268,7 +397,7 @@ export class Enemy {
     const p = ctx.player.head;
     this.yaw = Math.atan2(p.x - pos.x, p.z - pos.z);
     this.state = 'fall'; this.stateT = 0;
-    this.hp = 500; this.dead = false;
+    this.hp = this.type.hp; this.dead = false;
     this.voice = rnd(0.82, 1.18);
     this.guard = (Math.random() * GUARDS.length) | 0; this.guardT = rnd(1, 3);
     this.pref = rnd(1.0, 1.8); this.prefT = rnd(1, 3);
@@ -281,20 +410,24 @@ export class Enemy {
     this.strafe = Math.random() < 0.5 ? -1 : 1;
     // smoothed right-hand target (right-positive local) and blade direction (local)
     this.hand = R(0.3, 2.0, 0.1); this.blade = R(0.1, 1, 0.2).normalize();
-    this.handL = R(-0.3, 2.0, 0.1);
+    this.handL = R(-0.3, 2.0, 0.1); this.bladeL = R(-0.1, 1, 0.2).normalize();
+    this.atkSide = 'R'; this.lastSide = 'L';
     this.pose = {};
 
     // materials per enemy so hit flashes are individual
+    const MODEL = this.model;
     this.mats = MODEL
-      ? [new THREE.MeshLambertMaterial({ map: MODEL.map, flatShading: true, emissive: 0x000000 })]
+      ? MODEL.mats.map(m => { const c = m.clone(); c.emissive = new THREE.Color(0); return c; })
       : [lambert(0xd41f3a, { emissive: 0x000000 }), lambert(0x8f1024, { emissive: 0x000000 })];
     this.eyeMat = new THREE.MeshBasicMaterial({ color: 0xffd23a });
-    const partGeos = (key, type) => (MODEL ? [MODEL.geos[key]] : geos()[type]);
+    const partGeos = (key, type) => (MODEL ? MODEL.geos[key].map(e => e.geo) : geos()[type]);
+    const partMats = (key, slot) => (MODEL ? MODEL.geos[key].map(e => this.mats[e.mat]) : null);
     this.parts = {};
     for (const [key, type, mult, slot] of PARTS) {
       const group = new THREE.Group();
-      for (const g of partGeos(key, type)) { const m = new THREE.Mesh(g, this.mats[MODEL ? 0 : slot]); m.castShadow = true; group.add(m); }
-      if (key === 'head' && !MODEL) {
+      const pm = partMats(key, slot);
+      partGeos(key, type).forEach((g, gi) => { const m = new THREE.Mesh(g, pm ? pm[gi] : this.mats[slot]); m.castShadow = true; group.add(m); });
+      if (key === 'head' && !this.model) {
         for (const s of [-1, 1]) {
           const eye = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.01, 3).rotateX(Math.PI / 2), this.eyeMat);
           eye.position.set(s * 0.045, 0.19, 0.108); eye.rotation.z = s * 0.5 + Math.PI;
@@ -311,12 +444,23 @@ export class Enemy {
       const plate = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.06, 0.06, 0.018, 6).translate(0, -MOUNT, 0)), steel);
       const stem = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.012, 0.012, 0.04, 6).translate(0, -0.115, 0)), steel);
       this.sword.group.add(plate, stem);
-      const cuff = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.052, 0.058, 0.07, 6, 1, true).translate(0, -RIG.LARM + 0.03, 0)),
+      const cuff = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.052, 0.058, 0.07, 6, 1, true).translate(0, -this.rig.LARM + 0.03, 0)),
         new THREE.MeshStandardMaterial({ color: 0x8d949c, metalness: 0.7, roughness: 0.35, flatShading: true, side: THREE.DoubleSide }));
       this.parts.lArmR.mesh.add(cuff);
       this.sword.group.traverse(o => { if (o.isMesh) o.castShadow = true; });
     }
     ctx.scene.add(this.sword.group);
+    if (this.type.dual) {
+      this.sword2 = makeSword({ blade: 0x6b7079, guard: 0x22252a, grip: 0x1a1414 });
+      const steel = new THREE.MeshStandardMaterial({ color: 0x8d949c, metalness: 0.7, roughness: 0.35, flatShading: true });
+      this.sword2.group.add(new THREE.Mesh(facet(new THREE.CylinderGeometry(0.06, 0.06, 0.018, 6).translate(0, -MOUNT, 0)), steel),
+        new THREE.Mesh(facet(new THREE.CylinderGeometry(0.012, 0.012, 0.04, 6).translate(0, -0.115, 0)), steel));
+      this.parts.lArmL.mesh.add(new THREE.Mesh(facet(new THREE.CylinderGeometry(0.052, 0.058, 0.07, 6, 1, true).translate(0, -this.rig.LARM + 0.03, 0)),
+        new THREE.MeshStandardMaterial({ color: 0x8d949c, metalness: 0.7, roughness: 0.35, flatShading: true, side: THREE.DoubleSide })));
+      this.sword2.group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+      ctx.scene.add(this.sword2.group);
+      this.pose.sword2 = { p: new THREE.Vector3(), q: new THREE.Quaternion() };
+    }
     this.pose.sword = { p: new THREE.Vector3(), q: new THREE.Quaternion() };
 
     this.computePose(0);
@@ -333,6 +477,13 @@ export class Enemy {
       .setAngularDamping(2).setCcdEnabled(true));
     this.swordCol = w.createCollider(hullDesc([this.sword.bladeGeo, this.sword.guardGeo, this.sword.gripGeo]).setDensity(3000).setCollisionGroups(GROUPS.esword), this.swordBody);
     phys.info.set(this.swordCol.handle, { kind: 'esword', enemy: this });
+    if (this.sword2) {
+      const s2 = this.pose.sword2;
+      this.sword2Body = w.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(s2.p.x, s2.p.y, s2.p.z).setRotation(s2.q).setAngularDamping(2).setCcdEnabled(true));
+      this.sword2Col = w.createCollider(hullDesc([this.sword2.bladeGeo, this.sword2.guardGeo, this.sword2.gripGeo]).setDensity(3000).setCollisionGroups(GROUPS.esword), this.sword2Body);
+      phys.info.set(this.sword2Col.handle, { kind: 'esword', enemy: this });
+      this.armed2 = true;
+    }
     // joints: each child hangs off its parent at the child's origin; the sword is held at the fist
     this.joints = {};
     for (const [a, b] of JOINTS) {
@@ -342,8 +493,12 @@ export class Enemy {
       j.setContactsEnabled(false);
       this.joints[b] = j;
     }
-    this.joints.sword = w.createImpulseJoint(RAPIER.JointData.spherical({ x: 0, y: -(RIG.LARM + PALM), z: 0 }, { x: 0, y: -MOUNT, z: 0 }), this.parts.lArmR.body, this.swordBody, true);
+    this.joints.sword = w.createImpulseJoint(RAPIER.JointData.spherical({ x: 0, y: -(this.rig.LARM + PALM), z: 0 }, { x: 0, y: -MOUNT, z: 0 }), this.parts.lArmR.body, this.swordBody, true);
     this.joints.sword.setContactsEnabled(false);
+    if (this.sword2) {
+      this.joints.sword2 = w.createImpulseJoint(RAPIER.JointData.spherical({ x: 0, y: -(this.rig.LARM + PALM), z: 0 }, { x: 0, y: -MOUNT, z: 0 }), this.parts.lArmL.body, this.sword2Body, true);
+      this.joints.sword2.setContactsEnabled(false);
+    }
     this.tonus = 1; this.tonusTarget = 1;
     this.syncMeshes();
 
@@ -377,14 +532,14 @@ export class Enemy {
         if (this.bleedT <= 0) ctx.particles.emit('blood', wp, tC.copy(wp).sub(tB).normalize(), 2, 1.2);
       }
       if (this.bleedT <= 0) this.bleedT = 0.05;
-      this.hp -= 4 * this.stumps.length * dt;
+      this.hp -= 4 * this.type.bleedMul * this.stumps.length * dt;
       if (this.hp <= 0) {
         const c = this.parts.chest.body.translation();
         this.die({ part: 'chest', point: new THREE.Vector3(c.x, c.y + 0.3, c.z), dir: new THREE.Vector3(0, 0, 0), speed: 1, dmg: 0 });
         return;
       }
     }
-    if (!this.armed && this.state === 'attack') this.setState('stagger', 0.5);
+    if (this.state === 'attack' && !(this.atkSide === 'L' ? this.armed2 : this.armed)) this.setState('stagger', 0.5);
 
     const toP = tC.set(P.head.x - this.root.x, 0, P.head.z - this.root.z);
     const dist = toP.length();
@@ -435,11 +590,11 @@ export class Enemy {
         this.prefT -= adt;
         if (this.prefT <= 0) { this.pref = rnd(1.0, 2.1); this.prefT = rnd(1.5, 3.5); if (Math.random() < 0.35) this.strafe *= -1; }
         const speed = 1.8;
-        if (!this.armed) { want.copy(toP).normalize().multiplyScalar(dist < 4 ? -1.3 : 0); handT = [0.15, 1.2, 0.2]; bladeT = [0, 1, 0]; }
+        if (!this.canFight) { want.copy(toP).normalize().multiplyScalar(dist < 4 ? -1.3 : 0); handT = [0.15, 1.2, 0.2]; bladeT = [0, 1, 0]; }
         else if (dist > this.pref + 0.25) want.copy(toP).normalize().multiplyScalar(speed);
         else if (dist < 0.85) want.copy(toP).normalize().multiplyScalar(-1.2);
         else want.copy(right).multiplyScalar(this.strafe * rnd(0.5, 0.9));
-        if (this.atkCd <= 0 && dist < 1.75 && this.armed) this.startAttack(Math.random() < 0.65 ? 'forehand' : 'backhand');
+        if (this.atkCd <= 0 && dist < 1.75 && this.canFight) this.startAttack(Math.random() < 0.65 ? 'forehand' : 'backhand');
         if (this.state === 'approach') this.reactToThreat(toP, right);
         break;
       }
@@ -494,9 +649,11 @@ export class Enemy {
           want.copy(fwd).multiplyScalar(Math.sin(u * Math.PI) * 1.8); turn = 2;
           if (!this.hitDone && u > 0.2 && u < 0.88) this.checkPlayerHit();
           if (u >= 1) {
-            if (this.combo > 0 && dist < 2.0 && this.armed) {
+            if (this.combo > 0 && dist < 2.0 && this.canFight) {
               // flow straight into the opposite cut: it starts where this one ended
+              // (a dual wielder alternates hands instead)
               this.combo--; this.move = mv.next; this.hitDone = false;
+              if (this.type.dual) { this.pickSide(); this.move = Math.random() < 0.6 ? 'forehand' : 'backhand'; }
               this.atkPhase = 'windup'; this.stateT = 0; this.windup = rnd(0.1, 0.18); this.strike = rnd(0.5, 0.62); this.snapWindFrom();
             } else { this.atkPhase = 'recover'; this.stateT = 0; }
           }
@@ -539,6 +696,16 @@ export class Enemy {
     this.lean.addScaledVector(this.leanW, dt);
     if (this.lean.length() > 0.8) this.lean.setLength(0.8);
 
+    // a left-handed cut is the right-handed curve mirrored; the right hand holds guard meanwhile
+    const mir = a => [-a[0], a[1], a[2]];
+    let leftH = null, leftB = null;
+    if (this.state === 'attack' && this.atkSide === 'L') {
+      leftH = mir(handT); leftB = mir(bladeT); twist = -twist;
+      const g = GUARDS[this.guard]; handT = g.h; bladeT = g.b;
+    } else if (this.sword2 && this.armed2 && this.state !== 'fall') {
+      const g = GUARDS[(this.guard + 1) % GUARDS.length]; leftH = mir(g.h); leftB = mir(g.b);
+    }
+    this.leanF = THREE.MathUtils.lerp(this.leanF ?? 0, leanF, 1 - Math.exp(-10 * adt));
     // smooth hand targets (local space) -> a little lag = weight
     const k = 1 - Math.exp(-handK * adt);
     this.hand.lerp(R(handT[0], handT[1], handT[2], tA), k);
@@ -548,9 +715,14 @@ export class Enemy {
     if (this.state === 'fall') lh = R(-0.35, 2.0, 0.15, tB);
     else if (this.state === 'attack' || this.state === 'block') lh = R(-0.28, 1.25, 0.3, tB);
     else lh = R(-0.3, 1.0 + crouch * 0, 0.14 * Math.sin(this.phase + Math.PI), tB);
-    this.handL.lerp(lh, 1 - Math.exp(-10 * adt));
+    if (leftH) {
+      const kl = this.state === 'attack' && this.atkSide === 'L' ? k : 1 - Math.exp(-10 * adt);
+      lh = R(leftH[0], leftH[1], leftH[2], tB);
+      this.handL.lerp(lh, kl);
+      this.bladeL.lerp(R(leftB[0], leftB[1], leftB[2], tA).normalize(), kl).normalize();
+    } else this.handL.lerp(lh, 1 - Math.exp(-10 * adt));
 
-    this.leanF = THREE.MathUtils.lerp(this.leanF ?? 0, leanF, 1 - Math.exp(-10 * adt));
+
     this.twist = THREE.MathUtils.lerp(this.twist ?? 0, twist, 1 - Math.exp(-12 * adt));
     this.crouch = crouch;
     this.computePose(adt);
@@ -575,11 +747,22 @@ export class Enemy {
 
   // remember where the sword is right now (right-positive local), so the wind-up starts from it
   snapWindFrom() {
-    this.windFrom = { h: new THREE.Vector3(-this.hand.x, this.hand.y, this.hand.z), b: new THREE.Vector3(-this.blade.x, this.blade.y, this.blade.z) };
+    this.windFrom = this.atkSide === 'L'
+      ? { h: this.handL.clone(), b: this.bladeL.clone() } // mirror of right-positive = local
+      : { h: new THREE.Vector3(-this.hand.x, this.hand.y, this.hand.z), b: new THREE.Vector3(-this.blade.x, this.blade.y, this.blade.z) };
+  }
+
+  get canFight() { return this.armed || !!this.armed2; }
+
+  pickSide() {
+    const want = this.type.dual ? (this.lastSide === 'R' ? 'L' : 'R') : 'R';
+    this.atkSide = (want === 'L' ? this.armed2 : this.armed) ? want : (this.armed ? 'R' : 'L');
+    this.lastSide = this.atkSide;
   }
 
   startAttack(move) {
     this.move = move;
+    this.pickSide();
     this.windup = rnd(0.18, 0.3); this.strike = rnd(0.5, 0.62); this.recover = rnd(0.3, 0.5);
     this.snapWindFrom();
     this.combo = Math.random() < 0.55 ? (Math.random() < 0.4 ? 2 : 1) : 0;
@@ -605,23 +788,23 @@ export class Enemy {
     const chestQ = new THREE.Quaternion().copy(leanQ).multiply(yq).multiply(local);
 
     const P = this.pose;
-    P.pelvis.p.copy(this.root).add(tA.set(0, RIG.pelvisH - bob - (this.crouch || 0), 0));
+    P.pelvis.p.copy(this.root).add(tA.set(0, this.rig.pelvisH - bob - (this.crouch || 0), 0));
     P.pelvis.q.copy(pelvisQ);
-    P.chest.p.copy(P.pelvis.p).add(tA.fromArray(RIG.chest).applyQuaternion(pelvisQ));
+    P.chest.p.copy(P.pelvis.p).add(tA.fromArray(this.rig.chest).applyQuaternion(pelvisQ));
     P.chest.q.copy(chestQ);
-    P.head.p.copy(P.chest.p).add(tA.fromArray(RIG.head).applyQuaternion(chestQ));
+    P.head.p.copy(P.chest.p).add(tA.fromArray(this.rig.head).applyQuaternion(chestQ));
     P.head.q.copy(leanQ).multiply(yq); // head stays level and faces the player
 
     // arms
     for (const side of ['R', 'L']) {
-      const sx = side === 'R' ? -RIG.shoulder[0] : RIG.shoulder[0];
-      const sh = P['uArm' + side].p.copy(P.chest.p).add(tA.set(sx, RIG.shoulder[1], RIG.shoulder[2]).applyQuaternion(chestQ));
+      const sx = side === 'R' ? -this.rig.shoulder[0] : this.rig.shoulder[0];
+      const sh = P['uArm' + side].p.copy(P.chest.p).add(tA.set(sx, this.rig.shoulder[1], this.rig.shoulder[2]).applyQuaternion(chestQ));
       const handLocal = side === 'R' ? this.hand : this.handL;
       const target = this.toWorld(handLocal, new THREE.Vector3());
       const pole = new THREE.Vector3().addScaledVector(fwd, -0.6).addScaledVector(rightW, side === 'R' ? 0.7 : -0.7).add(tA.set(0, -0.6, 0));
       const elbow = P['lArm' + side].p;
       const hand = new THREE.Vector3();
-      twoBone(sh, target, RIG.UARM, RIG.LARM, pole, elbow, hand);
+      twoBone(sh, target, this.rig.UARM, this.rig.LARM, pole, elbow, hand);
       basisQuat(tA.subVectors(sh, elbow), fwd, P['uArm' + side].q);
       basisQuat(tA.subVectors(elbow, hand), fwd, P['lArm' + side].q);
       if (side === 'R') {
@@ -631,26 +814,33 @@ export class Enemy {
         basisQuat(bladeW, edgeHint, P.sword.q);
         const mountW = tB.subVectors(hand, elbow).normalize().multiplyScalar(PALM).add(hand);
         P.sword.p.copy(tC.set(0, MOUNT, 0).applyQuaternion(P.sword.q)).add(mountW);
+      } else if (this.sword2) {
+        const bladeW = this.dirToWorld(this.bladeL, new THREE.Vector3());
+        const edgeHint = new THREE.Vector3().crossVectors(tC.copy(rightW).negate(), bladeW);
+        if (edgeHint.lengthSq() < 1e-3) edgeHint.copy(fwd);
+        basisQuat(bladeW, edgeHint, P.sword2.q);
+        const mountW = tB.subVectors(hand, elbow).normalize().multiplyScalar(PALM).add(hand);
+        P.sword2.p.copy(tC.set(0, MOUNT, 0).applyQuaternion(P.sword2.q)).add(mountW);
       }
     }
 
     // legs (procedural gait, feet planted by IK)
     const moveDir = speed > 0.05 ? tC.set(this.vel.x / speed, 0, this.vel.z / speed) : tC.copy(fwd);
     for (const side of ['L', 'R']) {
-      const hx = side === 'R' ? -RIG.hip[0] : RIG.hip[0];
-      const hip = P['thigh' + side].p.copy(P.pelvis.p).add(tA.set(hx, RIG.hip[1], RIG.hip[2]).applyQuaternion(pelvisQ));
+      const hx = side === 'R' ? -this.rig.hip[0] : this.rig.hip[0];
+      const hip = P['thigh' + side].p.copy(P.pelvis.p).add(tA.set(hx, this.rig.hip[1], this.rig.hip[2]).applyQuaternion(pelvisQ));
       const ph = this.phase + (side === 'R' ? Math.PI : 0);
       let foot;
       if (this.state === 'fall') {
-        foot = new THREE.Vector3(hip.x, hip.y - (RIG.THIGH + RIG.SHIN) + 0.04, hip.z).addScaledVector(fwd, Math.sin(performance.now() / 150 + ph) * 0.06);
+        foot = new THREE.Vector3(hip.x, hip.y - (this.rig.THIGH + this.rig.SHIN) + 0.04, hip.z).addScaledVector(fwd, Math.sin(performance.now() / 150 + ph) * 0.06);
       } else {
-        foot = new THREE.Vector3(hip.x, RIG.ankleY + Math.max(0, Math.cos(ph)) * lift, hip.z)
+        foot = new THREE.Vector3(hip.x, this.rig.ankleY + Math.max(0, Math.cos(ph)) * lift, hip.z)
           .addScaledVector(moveDir, Math.sin(ph) * amp).addScaledVector(rightW, side === 'R' ? 0.03 : -0.03);
       }
       const pole = new THREE.Vector3().copy(fwd).add(tA.set(0, 0.2, 0));
       const knee = P['shin' + side].p;
       const ankle = new THREE.Vector3();
-      twoBone(hip, foot, RIG.THIGH, RIG.SHIN, pole, knee, ankle);
+      twoBone(hip, foot, this.rig.THIGH, this.rig.SHIN, pole, knee, ankle);
       basisQuat(tA.subVectors(hip, knee), fwd, P['thigh' + side].q);
       basisQuat(tA.subVectors(knee, ankle), fwd, P['shin' + side].q);
     }
@@ -664,7 +854,7 @@ export class Enemy {
     for (const part of Object.values(this.parts)) {
       const ps = this.pose[part.key];
       if (this.lost.has(part.key)) continue;
-      driveAng(part.body, ps.q, 24, 26, 700 * STR[part.key] * T, h);
+      driveAng(part.body, ps.q, 24, 26, 700 * STR[part.key] * this.type.str * T, h);
     }
     const ff = tA.copy(this.vel).add(this.knock);
     if (this.state !== 'fall') {
@@ -672,9 +862,15 @@ export class Enemy {
       driveLin(this.parts.chest.body, this.pose.chest.p, ff, 9, 6, 45 * T, h);
       if (!this.lost.has('head')) driveLin(this.parts.head.body, this.pose.head.p, ff, 9, 6, 35 * T, h);
     }
+    const swing2 = this.state === 'attack' && this.atkPhase === 'strike' && this.atkSide === 'L';
+    if (this.sword2 && this.armed2) {
+      const s2 = this.pose.sword2;
+      driveAng(this.sword2Body, s2.q, 26, 30, (swing2 ? 650 : 1100) * T, h);
+      driveLin(this.sword2Body, s2.p, ff, 14, 12, (swing2 ? 55 : 90) * T, h);
+    }
     if (!this.armed) return;
     // looser grip while swinging, so the blade carries momentum like a real ragdoll cut
-    const swinging = this.state === 'attack' && this.atkPhase === 'strike';
+    const swinging = this.state === 'attack' && this.atkPhase === 'strike' && this.atkSide === 'R';
     const sp = this.pose.sword;
     driveAng(this.swordBody, sp.q, 26, 30, (swinging ? 650 : 1100) * T, h);
     driveLin(this.swordBody, sp.p, ff, 14, 12, (swinging ? 55 : 90) * T, h);
@@ -686,7 +882,7 @@ export class Enemy {
     const pb = this.parts.pelvis.body.translation();
     if (this.state === 'fall') {
       this.root.y = Math.max(0, pb.y - 0.92);
-      if (pb.y < RIG.pelvisH + 0.12) {
+      if (pb.y < this.rig.pelvisH + 0.12) {
         // land on the feet: the legs soak up most of the fall instead of crumpling
         for (const part of Object.values(this.parts)) {
           const v = part.body.linvel();
@@ -722,6 +918,10 @@ export class Enemy {
       const t = part.body.translation(), r = part.body.rotation();
       part.mesh.position.set(t.x, t.y, t.z); part.mesh.quaternion.set(r.x, r.y, r.z, r.w);
     }
+    if (this.sword2 && this.armed2) {
+      const t2 = this.sword2Body.translation(), r2 = this.sword2Body.rotation();
+      this.sword2.group.position.set(t2.x, t2.y, t2.z); this.sword2.group.quaternion.set(r2.x, r2.y, r2.z, r2.w);
+    }
     if (!this.armed) return;
     const t = this.swordBody.translation(), r = this.swordBody.rotation();
     this.sword.group.position.set(t.x, t.y, t.z); this.sword.group.quaternion.set(r.x, r.y, r.z, r.w);
@@ -730,7 +930,8 @@ export class Enemy {
   // Enemy blade segment vs a capsule around the player's head/torso.
   checkPlayerHit() {
     const P = this.ctx.player;
-    const st = this.swordBody.translation(), sr = this.swordBody.rotation();
+    const sb = this.atkSide === 'L' && this.sword2 ? this.sword2Body : this.swordBody;
+    const st = sb.translation(), sr = sb.rotation();
     const sq = qA.set(sr.x, sr.y, sr.z, sr.w), spos = tC.set(st.x, st.y, st.z);
     const a = new THREE.Vector3(0, this.sword.baseY, 0).applyQuaternion(sq).add(spos);
     const b = new THREE.Vector3(0, this.sword.tipY, 0).applyQuaternion(sq).add(spos);
@@ -753,7 +954,7 @@ export class Enemy {
     this.flash = 1;
     ctx.particles.emit('blood', hit.point, hit.dir, 6 + Math.round(hit.dmg / 4), 2.5);
     if (this.hp <= 0) { this.die(hit); return; }
-    if (hit.cut && hit.dmg >= (hit.part === 'head' ? HEAD_CUT_DMG : CUT_DMG) && CHAINS[hit.part] && !this.lost.has(hit.part)) {
+    if (hit.cut && hit.dmg >= (hit.part === 'head' ? HEAD_CUT_DMG : CUT_DMG) * this.type.cutMul && CHAINS[hit.part] && !this.lost.has(hit.part)) {
       if (hit.part === 'head') { this.hp = 0; this.die(hit); return; } // decapitation
       this.cutLimb(hit.part, hit);
     }
@@ -773,7 +974,7 @@ export class Enemy {
     body.applyImpulseAtPoint({ x: hit.dir.x * imp, y: hit.dir.y * imp * 0.5, z: hit.dir.z * imp }, hit.point, true);
     this.tonus *= 0.72;
     if (this.state === 'fall' || this.state === 'down' || this.state === 'getup') return;
-    if (hit.dmg > 75 && Math.random() < 0.25) this.knockDown(rnd(1.0, 1.6));
+    if (hit.dmg > this.type.kdDmg && Math.random() < this.type.kdChance) this.knockDown(rnd(1.0, 1.6));
     else this.setState('stagger', 0.3 + Math.min(0.3, hit.dmg / 150));
   }
 
@@ -799,6 +1000,7 @@ export class Enemy {
     w.removeImpulseJoint(this.joints[key], true);
     for (const k of CHAINS[key]) {
       if (k === 'sword') { this.dropSword(); continue; }
+      if (k === 'sword2') { this.dropSword2(); continue; }
       if (this.lost.has(k)) continue;
       this.lost.add(k);
       const part = this.parts[k];
@@ -816,6 +1018,14 @@ export class Enemy {
     ctx.pieces.shards(jp, hit.dir, Math.min(hit.speed, 8), 0xb3001b, 4);
     sfx.splat(); sfx.grunt(1, this.voice * 1.1, 0.6);
     if (key.startsWith('thigh') || key.startsWith('shin')) { this.crippled = true; this.knockDown(1e9); }
+  }
+
+  dropSword2() {
+    if (!this.sword2 || !this.armed2) return;
+    this.armed2 = false;
+    phys.world.removeImpulseJoint(this.joints.sword2, true);
+    this.sword2Col.setCollisionGroups(GROUPS.piece);
+    this.ctx.pieces.add(this.sword2.group, this.sword2Body, 35);
   }
 
   dropSword() {
@@ -868,7 +1078,7 @@ export class Enemy {
     }
 
     // the sword drops as a loose physics piece
-    this.dropSword();
+    this.dropSword(); this.dropSword2();
 
     ctx.pieces.shards(hit.point, hit.dir, Math.min(hit.speed, 10), 0xd41f3a, 8);
     ctx.particles.emit('blood', hit.point, hit.dir, 70, 3.5);
@@ -885,6 +1095,7 @@ export class Enemy {
       this.ctx.scene.remove(part.mesh);
     }
     if (this.armed) { removeBody(this.swordBody); this.ctx.scene.remove(this.sword.group); }
+    if (this.sword2 && this.armed2) { removeBody(this.sword2Body); this.ctx.scene.remove(this.sword2.group); }
     this.ctx.scene.remove(this.marker);
     this.dead = true;
   }

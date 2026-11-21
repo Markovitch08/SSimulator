@@ -3,11 +3,11 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, hullDesc } from './physics.js';
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { Particles, Pieces } from './fx.js';
-import { Enemy, loadEnemyModel } from './enemy.js';
+import { Enemy, loadEnemyModel, loadStaticModel, TYPES } from './enemy.js';
 import { sfx, resumeAudio } from './audio.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '2.5';
+export const VERSION = '3.5';
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
 
@@ -96,7 +96,10 @@ const decor = [];
 // ---------------------------------------------------------------- physics + game objects
 const loading = document.getElementById('loading');
 await initPhysics();
-try { await loadEnemyModel('models/richard.glb'); } catch (e) { console.warn('Enemy model failed to load, using the built-in body:', e); }
+try { await loadEnemyModel('richard', 'models/richard.glb'); } catch (e) { console.warn('Richard model failed to load, using the built-in body:', e); }
+try {
+  await loadStaticModel('andrew', 'models/andrew.glb', { facing: -1, roles: ['feet', 'torso', 'arms', 'head', 'legs'] });
+} catch (e) { console.warn('Andrew model failed to load:', e); }
 loading.remove();
 const world = phys.world;
 
@@ -309,7 +312,7 @@ function pulse(hand, intensity, ms) {
 }
 
 // ---------------------------------------------------------------- spawning / game flow
-function spawnEnemy() {
+function spawnEnemy(forceType) {
   if (player.dead) return;
   if (enemies.filter(e => !e.dead).length >= MAX_ALIVE) { sfx.beep(); return; }
   const f = camera.getWorldDirection(new THREE.Vector3()).setY(0);
@@ -317,7 +320,10 @@ function spawnEnemy() {
   f.normalize();
   const a = Math.atan2(f.x, f.z) + (Math.random() - 0.5) * 1.4, r = 6 + Math.random() * 3;
   const pos = new THREE.Vector3(player.head.x + Math.sin(a) * r, 0, player.head.z + Math.cos(a) * r);
-  enemies.push(new Enemy(ctx, pos));
+  let pick = Math.random() * Object.values(TYPES).reduce((a, t) => a + t.weight, 0), type = 'richard';
+  for (const [name, t] of Object.entries(TYPES)) { pick -= t.weight; if (pick <= 0) { type = name; break; } }
+  if (typeof forceType === 'string' && TYPES[forceType]) type = forceType;
+  enemies.push(new Enemy(ctx, pos, type));
   sfx.whoosh();
 }
 
@@ -572,4 +578,4 @@ renderer.setAnimationLoop(() => {
 });
 
 // test / debug hook
-window.game = { stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };
+window.game = { Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };
