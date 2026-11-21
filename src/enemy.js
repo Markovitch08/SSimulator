@@ -404,6 +404,7 @@ export class Enemy {
     this.dodge = new THREE.Vector3();
     this.move = null; this.atkPhase = null; this.combo = 0;
     this.armed = true; this.lost = new Set(); this.stumps = []; this.crippled = false;
+    this.leapCd = rnd(0.3, 0.8); this.btnCd = rnd(1, 3); this.leapHit = false;
     this.freeze = 0; this.flash = 0; this.hitCd = 0; this.clashCd = 0;
     this.atkCd = 0.6 + Math.random() * 0.5; this.thinkT = 0; this.phase = Math.random() * 6;
     this.attack = null; this.hitDone = false;
@@ -543,7 +544,8 @@ export class Enemy {
 
     const toP = tC.set(P.head.x - this.root.x, 0, P.head.z - this.root.z);
     const dist = toP.length();
-    const desiredYaw = Math.atan2(toP.x, toP.z);
+    let desiredYaw = Math.atan2(toP.x, toP.z);
+    this.leapCd -= adt; this.btnCd -= adt;
     let turn = 5;
     const want = tD.set(0, 0, 0); // desired planar velocity (world)
     let handT = MARCH.h, bladeT = MARCH.b, handK = 14, leanF = 0.14, twist = 0;
@@ -590,12 +592,69 @@ export class Enemy {
         this.prefT -= adt;
         if (this.prefT <= 0) { this.pref = rnd(1.0, 2.1); this.prefT = rnd(1.5, 3.5); if (Math.random() < 0.35) this.strafe *= -1; }
         const speed = 1.8;
-        if (!this.canFight) { want.copy(toP).normalize().multiplyScalar(dist < 4 ? -1.3 : 0); handT = [0.15, 1.2, 0.2]; bladeT = [0, 1, 0]; }
+        if (!this.canFight) {
+          // disarmed: close to pouncing range, then crouch and leap
+          want.copy(toP).normalize().multiplyScalar(dist > 2.6 ? speed : dist < 1.4 ? -1 : 0);
+          handT = [0.25, 1.15, 0.3]; bladeT = [0, 1, 0];
+          if (dist < 3.2 && this.leapCd <= 0 && !this.crippled) this.setState('charge', 0.6);
+        }
         else if (dist > this.pref + 0.25) want.copy(toP).normalize().multiplyScalar(speed);
         else if (dist < 0.85) want.copy(toP).normalize().multiplyScalar(-1.2);
         else want.copy(right).multiplyScalar(this.strafe * rnd(0.5, 0.9));
         if (this.atkCd <= 0 && dist < 1.75 && this.canFight) this.startAttack(Math.random() < 0.65 ? 'forehand' : 'backhand');
         if (this.state === 'approach') this.reactToThreat(toP, right);
+        if (this.state === 'approach' && this.btnCd <= 0 && this.wantsButton(dist)) {
+          if (Math.random() < 0.6) this.setState('seekButton', 12); else this.btnCd = rnd(3, 6);
+        }
+        break;
+      }
+      case 'seekButton': {
+        // secondary objective: go press the spawn button while the player is busy with someone else
+        const btn = ctx.button;
+        const tb = tC.set(btn.pos.x - this.root.x, 0, btn.pos.z - this.root.z);
+        const bd = tb.length();
+        desiredYaw = Math.atan2(tb.x, tb.z);
+        const g = GUARDS[this.guard]; handT = g.h; bladeT = g.b;
+        if (!this.wantsButton(dist, true) || this.stateT > this.stateDur) { this.btnCd = rnd(3, 6); this.setState('approach'); break; }
+        if (bd > 0.5) want.copy(tb).normalize().multiplyScalar(2.1);
+        else {
+          // reach out and slap it
+          const loc = this.toLocal(btn.pos, new THREE.Vector3());
+          handT = [-loc.x, loc.y + 0.05, loc.z]; bladeT = [0, 1, 0.3]; handK = 18;
+          if (this.stateT > 0.35 && this.pressT === undefined) this.pressT = this.stateT;
+          if (this.pressT !== undefined && this.stateT - this.pressT > 0.35) {
+            ctx.pressButton(this);
+            this.pressT = undefined; this.btnCd = rnd(10, 16); this.setState('approach');
+          }
+        }
+        break;
+      }
+      case 'charge': {
+        // coil down for 0.6 s, glaring at the player
+        crouch = 0.3 * Math.min(1, this.stateT / 0.3); leanF = 0.35; turn = 6;
+        handT = [0.3, 1.0, -0.25];
+        if (this.stateT >= this.stateDur) this.launchLeap(toP, dist);
+        break;
+      }
+      case 'leap': {
+        // airborne: arms out in front, hurt the player on contact, land
+        handT = [0.22, 1.6, 0.6]; leanF = 0.5; turn = 0;
+        if (!this.leapHit) {
+          const P = ctx.player;
+          for (const k of ['chest', 'head', 'lArmR', 'lArmL']) {
+            if (this.lost.has(k)) continue;
+            const t = this.parts[k].body.translation();
+            const q = tA.set(t.x, t.y, t.z);
+            const cy = THREE.MathUtils.clamp(q.y, P.head.y - 0.8, P.head.y);
+            if (Math.hypot(q.x - P.head.x, q.z - P.head.z) < 0.35 && Math.abs(q.y - cy) < 0.3) {
+              this.leapHit = true; ctx.damagePlayer(14, this); sfx.grunt(1, this.voice); break;
+            }
+          }
+        }
+        const pb = this.parts.pelvis.body, pv = pb.linvel();
+        if ((this.stateT > 0.3 && pv.y <= 0.5 && pb.translation().y < this.rig.pelvisH + 0.15) || this.stateT > 1.6) {
+          this.tonusTarget = 1; this.leapCd = rnd(1.4, 2.4); this.setState('land', 0.45);
+        }
         break;
       }
       case 'dodge': {
@@ -683,7 +742,7 @@ export class Enemy {
     }
 
     // integrate planar motion
-    if (this.state !== 'fall') {
+    if (this.state !== 'fall' && this.state !== 'leap') {
       this.vel.lerp(want, 1 - Math.exp(-8 * adt));
       this.root.addScaledVector(this.vel, adt).addScaledVector(this.knock, dt);
       this.knock.multiplyScalar(Math.exp(-5 * dt));
@@ -714,6 +773,8 @@ export class Enemy {
     let lh;
     if (this.state === 'fall') lh = R(-0.35, 2.0, 0.15, tB);
     else if (this.state === 'attack' || this.state === 'block') lh = R(-0.28, 1.25, 0.3, tB);
+    else if (this.state === 'charge') lh = R(-0.3, 1.0, -0.25, tB);
+    else if (this.state === 'leap') lh = R(-0.22, 1.6, 0.6, tB);
     else lh = R(-0.3, 1.0 + crouch * 0, 0.14 * Math.sin(this.phase + Math.PI), tB);
     if (leftH) {
       const kl = this.state === 'attack' && this.atkSide === 'L' ? k : 1 - Math.exp(-10 * adt);
@@ -750,6 +811,32 @@ export class Enemy {
     this.windFrom = this.atkSide === 'L'
       ? { h: this.handL.clone(), b: this.bladeL.clone() } // mirror of right-positive = local
       : { h: new THREE.Vector3(-this.hand.x, this.hand.y, this.hand.z), b: new THREE.Vector3(-this.blade.x, this.blade.y, this.blade.z) };
+  }
+
+  // Only bother with the button when the player isn't right here and is busy fighting someone else.
+  wantsButton(dist, already = false) {
+    const ctx = this.ctx;
+    if (!ctx.button || this.crippled) return false;
+    // deciding needs the player at a distance; once committed, only bail if the player closes right in
+    if (dist < (already ? 0.9 : 2.6)) return false;
+    const P = ctx.player.head;
+    return ctx.enemies.some(o => o !== this && !o.dead && o.state !== 'fall' && o.state !== 'seekButton' &&
+      Math.hypot(o.root.x - P.x, o.root.z - P.z) < 2.0);
+  }
+
+  // jump at the player: everything gets the same launch velocity, muscles loosen in flight
+  launchLeap(toP, dist) {
+    const dir = tA.copy(toP).normalize();
+    const vh = THREE.MathUtils.clamp(dist / 0.55, 3, 7.5);
+    for (const part of Object.values(this.parts)) {
+      if (this.lost.has(part.key)) continue;
+      const v = part.body.linvel();
+      part.body.setLinvel({ x: v.x * 0.2 + dir.x * vh, y: 3.4, z: v.z * 0.2 + dir.z * vh }, true);
+    }
+    this.tonus = Math.min(this.tonus, 0.7); this.tonusTarget = 0.7;
+    this.leapHit = false;
+    sfx.grunt(0.9, this.voice * 1.05);
+    this.setState('leap');
   }
 
   get canFight() { return this.armed || !!this.armed2; }
@@ -857,7 +944,7 @@ export class Enemy {
       driveAng(part.body, ps.q, 24, 26, 700 * STR[part.key] * this.type.str * T, h);
     }
     const ff = tA.copy(this.vel).add(this.knock);
-    if (this.state !== 'fall') {
+    if (this.state !== 'fall' && this.state !== 'leap') {
       driveLin(this.parts.pelvis.body, this.pose.pelvis.p, ff, 12, 7, 95 * T, h);
       driveLin(this.parts.chest.body, this.pose.chest.p, ff, 9, 6, 45 * T, h);
       if (!this.lost.has('head')) driveLin(this.parts.head.body, this.pose.head.p, ff, 9, 6, 35 * T, h);
@@ -896,7 +983,7 @@ export class Enemy {
     }
     const dx = pb.x - this.root.x, dz = pb.z - this.root.z, d = Math.hypot(dx, dz);
     if (d > 0.2) { const f = 1 - 0.2 / d; this.root.x += dx * f; this.root.z += dz * f; }
-    if (this.state === 'down' || this.state === 'getup' || this.state === 'land') return;
+    if (this.state === 'down' || this.state === 'getup' || this.state === 'land' || this.state === 'leap') return;
     const r = this.parts.chest.body.rotation();
     const up = tB.set(0, 1, 0).applyQuaternion(qA.set(r.x, r.y, r.z, r.w));
     if (pb.y < 0.5 || up.y < 0.3) this.knockDown(rnd(1.0, 1.6));

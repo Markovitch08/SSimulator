@@ -7,7 +7,7 @@ import { Enemy, loadEnemyModel, loadStaticModel, TYPES } from './enemy.js';
 import { sfx, resumeAudio } from './audio.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '3.5';
+export const VERSION = '4.5';
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
 
@@ -328,6 +328,8 @@ function spawnEnemy(forceType) {
 }
 
 const ctx = {
+  button: { pos: new THREE.Vector3(-0.75, 0.885, -0.8) },
+  pressButton: e => pressSpawnButton(e),
   scene, particles, pieces, enemies, player,
   onLand(e) {
     particles.emit('dust', e.root.clone().setY(0.05), null, 26, 3);
@@ -533,10 +535,16 @@ function updateButton(dt) {
   });
   btnPrev = probes;
   btn.material.emissive.setHex(near || btnPress > 0 ? 0x992222 : 0x330000);
-  if (hit && btnCd <= 0) {
-    btnCd = 0.6; btnPress = 1; resumeAudio(); sfx.beep(); spawnEnemy();
-    pulse(null, 0.6, 50);
-  }
+  ctx.button.pos.copy(bp);
+  if (hit) pressSpawnButton();
+}
+
+// shared by the player and by enemies calling in reinforcements
+function pressSpawnButton(byEnemy) {
+  if (btnCd > 0) return false;
+  btnCd = 0.6; btnPress = 1; resumeAudio(); sfx.beep(); spawnEnemy();
+  if (!byEnemy) pulse(null, 0.6, 50);
+  return true;
 }
 
 // ---------------------------------------------------------------- main loop
