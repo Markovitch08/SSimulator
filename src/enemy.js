@@ -604,7 +604,7 @@ export class Enemy {
         if (this.atkCd <= 0 && dist < 1.75 && this.canFight) this.startAttack(Math.random() < 0.65 ? 'forehand' : 'backhand');
         if (this.state === 'approach') this.reactToThreat(toP, right);
         if (this.state === 'approach' && this.btnCd <= 0 && this.wantsButton(dist)) {
-          if (Math.random() < 0.6) this.setState('seekButton', 12); else this.btnCd = rnd(3, 6);
+          if (Math.random() < 0.75) this.setState('seekButton', 12); else this.btnCd = rnd(3, 6);
         }
         break;
       }
@@ -624,7 +624,7 @@ export class Enemy {
           if (this.stateT > 0.35 && this.pressT === undefined) this.pressT = this.stateT;
           if (this.pressT !== undefined && this.stateT - this.pressT > 0.35) {
             ctx.pressButton(this);
-            this.pressT = undefined; this.btnCd = rnd(10, 16); this.setState('approach');
+            this.pressT = undefined; this.btnCd = rnd(5, 10); this.setState('approach');
           }
         }
         break;
@@ -633,13 +633,39 @@ export class Enemy {
         // coil down for 0.6 s, glaring at the player
         crouch = 0.3 * Math.min(1, this.stateT / 0.3); leanF = 0.35; turn = 6;
         handT = [0.3, 1.0, -0.25];
-        if (this.stateT >= this.stateDur) this.launchLeap(toP, dist);
+        if (this.leapAtButton === undefined) {
+          const btn = ctx.button;
+          const bd = btn ? Math.hypot(btn.pos.x - this.root.x, btn.pos.z - this.root.z) : Infinity;
+          this.leapAtButton = bd < 4.2 && Math.random() < 0.4;
+        }
+        if (this.leapAtButton) {
+          const b = ctx.button.pos;
+          tC.set(b.x - this.root.x, 0, b.z - this.root.z);
+          desiredYaw = Math.atan2(tC.x, tC.z);
+        }
+        if (this.stateT >= this.stateDur) {
+          if (this.leapAtButton) {
+            const b = ctx.button.pos, tb = new THREE.Vector3(b.x - this.root.x, 0, b.z - this.root.z);
+            this.launchLeap(tb, tb.length());
+            this.leapBtn = true;
+          } else this.launchLeap(toP, dist);
+          this.leapAtButton = undefined;
+        }
         break;
       }
       case 'leap': {
         // airborne: arms out in front, hurt the player on contact, land
         handT = [0.22, 1.6, 0.6]; leanF = 0.5; turn = 0;
-        if (!this.leapHit) {
+        if (this.leapBtn && ctx.button) {
+          // body slam into the button triggers it
+          const b = ctx.button.pos;
+          for (const part of Object.values(this.parts)) {
+            if (this.lost.has(part.key)) continue;
+            const t = part.body.translation();
+            if (Math.hypot(t.x - b.x, t.z - b.z) < 0.28 && t.y > b.y - 0.25 && t.y < b.y + 0.35) { ctx.pressButton(this); this.leapBtn = false; break; }
+          }
+        }
+        if (!this.leapHit && !this.leapBtn) {
           const P = ctx.player;
           for (const k of ['chest', 'head', 'lArmR', 'lArmL']) {
             if (this.lost.has(k)) continue;
@@ -653,7 +679,7 @@ export class Enemy {
         }
         const pb = this.parts.pelvis.body, pv = pb.linvel();
         if ((this.stateT > 0.3 && pv.y <= 0.5 && pb.translation().y < this.rig.pelvisH + 0.15) || this.stateT > 1.6) {
-          this.tonusTarget = 1; this.leapCd = rnd(1.4, 2.4); this.setState('land', 0.45);
+          this.tonusTarget = 1; this.leapCd = rnd(1.4, 2.4); this.leapBtn = false; this.setState('land', 0.45);
         }
         break;
       }
@@ -821,7 +847,7 @@ export class Enemy {
     if (dist < (already ? 0.9 : 2.6)) return false;
     const P = ctx.player.head;
     return ctx.enemies.some(o => o !== this && !o.dead && o.state !== 'fall' && o.state !== 'seekButton' &&
-      Math.hypot(o.root.x - P.x, o.root.z - P.z) < 2.0);
+      Math.hypot(o.root.x - P.x, o.root.z - P.z) < 2.5);
   }
 
   // jump at the player: everything gets the same launch velocity, muscles loosen in flight
