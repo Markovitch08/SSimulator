@@ -46,5 +46,23 @@ export const sfx = {
   thump(i = 0.5) { if (!ok()) return; const t = ctx.currentTime; tone(t, 80, 35, 0.25, 0.4 + i * 0.5); noise(t, 0.1, 400, 0.7, 0.2 + i * 0.3); },
   whoosh() { if (!ok()) return; const t = ctx.currentTime; const s = ctx.createBufferSource(); s.buffer = noiseBuf; const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 3; f.frequency.setValueAtTime(300, t); f.frequency.exponentialRampToValueAtTime(2500, t + 0.6); const g = ctx.createGain(); env(g, t, 0.3, 0.25, 0.4); s.connect(f).connect(g).connect(master); s.start(t); s.stop(t + 0.8); },
   hurt() { if (!ok()) return; const t = ctx.currentTime; tone(t, 220, 60, 0.3, 0.6, 'sawtooth'); noise(t, 0.15, 700, 1, 0.5); },
+  // vocal grunt: buzzy source through two formant filters, pitch falling off
+  grunt(i = 0.5, pitch = 1, len = 0) {
+    if (!ok()) return; const t = ctx.currentTime;
+    const dur = len || 0.16 + i * 0.16 + Math.random() * 0.06;
+    const f0 = (105 + Math.random() * 25) * pitch;
+    const o = ctx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(f0 * 1.15, t); o.frequency.exponentialRampToValueAtTime(f0 * 0.75, t + dur);
+    const g = ctx.createGain(); env(g, t, 0.015, 0.35 + i * 0.45, dur);
+    const mix = ctx.createGain(); mix.gain.value = 1;
+    for (const [f, q, a] of [[(560 + Math.random() * 120) * pitch, 5, 1], [(1050 + Math.random() * 200) * pitch, 7, 0.55], [2400 * pitch, 9, 0.2]]) {
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q;
+      const ga = ctx.createGain(); ga.gain.value = a * 2.2;
+      o.connect(bp).connect(ga).connect(mix);
+    }
+    mix.connect(g).connect(master);
+    o.start(t); o.stop(t + dur + 0.05);
+    noise(t, dur * 0.6, 900 * pitch, 1.2, 0.06 + i * 0.08, 'bandpass'); // breath
+  },
   beep() { if (!ok()) return; const t = ctx.currentTime; tone(t, 660, 990, 0.12, 0.25, 'triangle'); },
 };

@@ -48,7 +48,12 @@ export function hullDesc(geometries) {
   return RAPIER.ColliderDesc.convexHull(pts);
 }
 
+// Touching a body after it has been removed panics inside Rapier and poisons the
+// whole world, so removal is idempotent.
+const removed = new WeakSet();
 export function removeBody(body) {
+  if (!body || removed.has(body)) return;
+  removed.add(body);
   const w = phys.world;
   for (let i = 0; i < body.numColliders(); i++) phys.info.delete(body.collider(i).handle);
   w.removeRigidBody(body);

@@ -7,7 +7,7 @@ import { Enemy, loadEnemyModel } from './enemy.js';
 import { sfx, resumeAudio } from './audio.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '0.5';
+export const VERSION = '1.5';
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
 
@@ -142,10 +142,10 @@ const msg = document.getElementById('msg');
 // ---------------------------------------------------------------- VR spawn button + wrist HUD
 const pedestal = new THREE.Group();
 {
-  const col = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.11, 0.16, 0.86, 6).translate(0, 0.43, 0)), lambert(0x3a3f47));
+  const col = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.15, 0.2, 0.86, 6).translate(0, 0.43, 0)), lambert(0x3a3f47));
   col.castShadow = true;
   pedestal.add(col);
-  const btn = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.1, 0.1, 0.05, 3)), lambert(0xd41f3a, { emissive: 0x330000 }));
+  const btn = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.15, 0.15, 0.05, 3)), lambert(0xd41f3a, { emissive: 0x330000 }));
   btn.position.y = 0.885; pedestal.add(btn); pedestal.userData.btn = btn;
   const c = document.createElement('canvas'); c.width = 256; c.height = 64;
   const g = c.getContext('2d'); g.fillStyle = '#d41f3a'; g.font = 'bold 44px system-ui'; g.textAlign = 'center'; g.fillText('SPAWN', 128, 48);
@@ -502,17 +502,33 @@ function fixedStep(h) {
 }
 
 // ---------------------------------------------------------------- spawn button press
+// Pressed by either hand or any part of the blade. Each probe is tested along the path it
+// travelled since the last frame, so a fast tap can't skip over the button.
+const BTN_R = 0.17;
+let btnPrev = [];
 function updateButton(dt) {
   btnCd -= dt;
   btnPress = Math.max(0, btnPress - dt * 4);
   const btn = pedestal.userData.btn;
   btn.position.y = 0.885 - btnPress * 0.03;
-  if (btnCd > 0) return;
   const bp = btn.getWorldPosition(new THREE.Vector3());
-  const probes = [player.tip.clone(), new THREE.Vector3(swordBody.translation().x, swordBody.translation().y, swordBody.translation().z).lerp(player.tip, 0.5)];
+  const st = swordBody.translation(), sr = swordBody.rotation();
+  const sq = new THREE.Quaternion(sr.x, sr.y, sr.z, sr.w), sp = new THREE.Vector3(st.x, st.y, st.z);
+  const probes = [0.1, 0.35, 0.6, 0.8, 1].map(f => new THREE.Vector3(0, psword.tipY * f, 0).applyQuaternion(sq).add(sp));
   for (const g of grips) if (g.userData.hand) probes.push(g.getWorldPosition(new THREE.Vector3()));
-  if (probes.some(p => p.distanceTo(bp) < 0.12)) {
-    btnCd = 0.8; btnPress = 1; resumeAudio(); sfx.beep(); spawnEnemy();
+  let near = false, hit = false;
+  const seg = new THREE.Line3(), c = new THREE.Vector3();
+  probes.forEach((p, i) => {
+    const prev = btnPrev[i] || p;
+    seg.set(prev, p).closestPointToPoint(bp, true, c);
+    const dxz = Math.hypot(c.x - bp.x, c.z - bp.z), dy = c.y - bp.y;
+    if (dxz < BTN_R + 0.08 && dy > -0.1 && dy < 0.25) near = true;
+    if (dxz < BTN_R && dy > -0.08 && dy < 0.12) hit = true;
+  });
+  btnPrev = probes;
+  btn.material.emissive.setHex(near || btnPress > 0 ? 0x992222 : 0x330000);
+  if (hit && btnCd <= 0) {
+    btnCd = 0.6; btnPress = 1; resumeAudio(); sfx.beep(); spawnEnemy();
     pulse(null, 0.6, 50);
   }
 }

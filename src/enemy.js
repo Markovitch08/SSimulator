@@ -37,7 +37,7 @@ function geos() {
 
 // key, geometry type, damage multiplier, material slot
 const PARTS = [
-  ['pelvis', 'pelvis', 1.0, 1], ['chest', 'chest', 1.25, 0], ['head', 'head', 1.9, 0],
+  ['pelvis', 'pelvis', 1.0, 1], ['chest', 'chest', 1.25, 0], ['head', 'head', 1.5, 0],
   ['uArmL', 'uArm', 0.75, 0], ['lArmL', 'lArm', 0.6, 1], ['uArmR', 'uArm', 0.75, 0], ['lArmR', 'lArm', 0.6, 1],
   ['thighL', 'thigh', 0.85, 1], ['shinL', 'shin', 0.7, 0], ['thighR', 'thigh', 0.85, 1], ['shinR', 'shin', 0.7, 0],
 ];
@@ -201,7 +201,9 @@ const CHAINS = {
   head: ['head'], uArmL: ['uArmL', 'lArmL'], lArmL: ['lArmL'], uArmR: ['uArmR', 'lArmR', 'sword'], lArmR: ['lArmR', 'sword'],
   thighL: ['thighL', 'shinL'], shinL: ['shinL'], thighR: ['thighR', 'shinR'], shinR: ['shinR'],
 };
-const CUT_DMG = 38;
+const CUT_DMG = 60;
+// sword mount: a steel plate under the pommel sits on a ball joint just past the wrist
+const MOUNT = 0.135, PALM = 0.04;
 // muscle strength per part
 const STR = { pelvis: 1.3, chest: 1.4, head: 1.8, uArmR: 1.5, lArmR: 1.4, uArmL: 0.9, lArmL: 0.8, thighL: 1, shinL: 0.9, thighR: 1, shinR: 0.9 };
 const _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _w = new THREE.Vector3();
@@ -255,7 +257,8 @@ export class Enemy {
     const p = ctx.player.head;
     this.yaw = Math.atan2(p.x - pos.x, p.z - pos.z);
     this.state = 'fall'; this.stateT = 0;
-    this.hp = 220; this.dead = false;
+    this.hp = 380; this.dead = false;
+    this.voice = rnd(0.82, 1.18);
     this.guard = (Math.random() * GUARDS.length) | 0; this.guardT = rnd(1, 3);
     this.pref = rnd(1.0, 1.8); this.prefT = rnd(1, 3);
     this.dodge = new THREE.Vector3();
@@ -292,6 +295,16 @@ export class Enemy {
       this.pose[key] = { p: new THREE.Vector3(), q: new THREE.Quaternion() };
     }
     this.sword = makeSword({ blade: 0x6b7079, guard: 0x22252a, grip: 0x1a1414 });
+    {
+      const steel = new THREE.MeshStandardMaterial({ color: 0x8d949c, metalness: 0.7, roughness: 0.35, flatShading: true });
+      const plate = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.06, 0.06, 0.018, 6).translate(0, -MOUNT, 0)), steel);
+      const stem = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.012, 0.012, 0.04, 6).translate(0, -0.115, 0)), steel);
+      this.sword.group.add(plate, stem);
+      const cuff = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.052, 0.058, 0.07, 6, 1, true).translate(0, -RIG.LARM + 0.03, 0)),
+        new THREE.MeshStandardMaterial({ color: 0x8d949c, metalness: 0.7, roughness: 0.35, flatShading: true, side: THREE.DoubleSide }));
+      this.parts.lArmR.mesh.add(cuff);
+      this.sword.group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    }
     ctx.scene.add(this.sword.group);
     this.pose.sword = { p: new THREE.Vector3(), q: new THREE.Quaternion() };
 
@@ -318,7 +331,7 @@ export class Enemy {
       j.setContactsEnabled(false);
       this.joints[b] = j;
     }
-    this.joints.sword = w.createImpulseJoint(RAPIER.JointData.spherical({ x: 0, y: -RIG.LARM, z: 0 }, { x: 0, y: 0, z: 0 }), this.parts.lArmR.body, this.swordBody, true);
+    this.joints.sword = w.createImpulseJoint(RAPIER.JointData.spherical({ x: 0, y: -(RIG.LARM + PALM), z: 0 }, { x: 0, y: -MOUNT, z: 0 }), this.parts.lArmR.body, this.swordBody, true);
     this.joints.sword.setContactsEnabled(false);
     this.tonus = 1; this.tonusTarget = 1;
     this.syncMeshes();
@@ -353,7 +366,7 @@ export class Enemy {
         if (this.bleedT <= 0) ctx.particles.emit('blood', wp, tC.copy(wp).sub(tB).normalize(), 2, 1.2);
       }
       if (this.bleedT <= 0) this.bleedT = 0.05;
-      this.hp -= 7 * this.stumps.length * dt;
+      this.hp -= 4 * this.stumps.length * dt;
       if (this.hp <= 0) {
         const c = this.parts.chest.body.translation();
         this.die({ part: 'chest', point: new THREE.Vector3(c.x, c.y + 0.3, c.z), dir: new THREE.Vector3(0, 0, 0), speed: 1, dmg: 0 });
@@ -586,8 +599,9 @@ export class Enemy {
         const bladeW = this.dirToWorld(this.blade, new THREE.Vector3());
         const edgeHint = new THREE.Vector3().crossVectors(rightW, bladeW);
         if (edgeHint.lengthSq() < 1e-3) edgeHint.copy(fwd);
-        P.sword.p.copy(hand);
         basisQuat(bladeW, edgeHint, P.sword.q);
+        const mountW = tB.subVectors(hand, elbow).normalize().multiplyScalar(PALM).add(hand);
+        P.sword.p.copy(tC.set(0, MOUNT, 0).applyQuaternion(P.sword.q)).add(mountW);
       }
     }
 
@@ -697,9 +711,10 @@ export class Enemy {
     for (let i = 0; i <= 6; i++) {
       const q = new THREE.Vector3().lerpVectors(top, bot, i / 6);
       const c = segP.closestPointToPoint(q, true, new THREE.Vector3());
-      best = Math.min(best, c.distanceTo(q));
+      // head (top sample) is a tighter sphere than the torso below it
+      best = Math.min(best, c.distanceTo(q) - (i === 0 ? 0.12 : 0.18));
     }
-    if (best < 0.2) { this.hitDone = true; this.ctx.damagePlayer(MOVES[this.move].dmg, this); }
+    if (best < 0) { this.hitDone = true; this.ctx.damagePlayer(MOVES[this.move].dmg, this); }
   }
 
   takeHit(hit) {
@@ -714,6 +729,7 @@ export class Enemy {
       this.cutLimb(hit.part, hit);
     }
     sfx.hit(Math.min(1, hit.dmg / 70));
+    sfx.grunt(Math.min(1, 0.3 + hit.dmg / 80), this.voice);
     this.freeze = 0.07;
     const dh = tA.set(hit.dir.x, 0, hit.dir.z);
     if (dh.lengthSq() > 1e-4) {
@@ -726,9 +742,9 @@ export class Enemy {
     const body = this.parts[hit.part].body;
     const imp = body.mass() * Math.min(hit.speed, 10) * 0.35;
     body.applyImpulseAtPoint({ x: hit.dir.x * imp, y: hit.dir.y * imp * 0.5, z: hit.dir.z * imp }, hit.point, true);
-    this.tonus *= 0.5;
+    this.tonus *= 0.72;
     if (this.state === 'fall' || this.state === 'down' || this.state === 'getup') return;
-    if (hit.dmg > 45 && Math.random() < 0.35) this.knockDown(rnd(1.0, 1.6));
+    if (hit.dmg > 75 && Math.random() < 0.25) this.knockDown(rnd(1.0, 1.6));
     else this.setState('stagger', 0.3 + Math.min(0.3, hit.dmg / 150));
   }
 
@@ -769,7 +785,7 @@ export class Enemy {
     this.stumps.push({ part: parentKey, local });
     ctx.particles.emit('blood', jp, hit.dir, 40, 3);
     ctx.pieces.shards(jp, hit.dir, Math.min(hit.speed, 8), 0xb3001b, 4);
-    sfx.splat();
+    sfx.splat(); sfx.grunt(1, this.voice * 1.1, 0.6);
     if (key.startsWith('thigh') || key.startsWith('shin')) { this.crippled = true; this.knockDown(1e9); }
   }
 
@@ -828,17 +844,18 @@ export class Enemy {
     ctx.pieces.shards(hit.point, hit.dir, Math.min(hit.speed, 10), 0xd41f3a, 8);
     ctx.particles.emit('blood', hit.point, hit.dir, 70, 3.5);
     for (const m of this.mats) m.emissive.setRGB(0, 0, 0);
-    sfx.splat();
+    sfx.splat(); sfx.grunt(1, this.voice * 0.85, 0.7);
     ctx.onKill(this, hit);
   }
 
   destroy() {
+    // severed limbs and a dropped sword already belong to the pieces list, which clears them
     for (const part of Object.values(this.parts)) {
+      if (this.lost.has(part.key)) continue;
       removeBody(part.body);
       this.ctx.scene.remove(part.mesh);
     }
-    removeBody(this.swordBody);
-    this.ctx.scene.remove(this.sword.group);
+    if (this.armed) { removeBody(this.swordBody); this.ctx.scene.remove(this.sword.group); }
     this.ctx.scene.remove(this.marker);
     this.dead = true;
   }
