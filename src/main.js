@@ -4,11 +4,12 @@ import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, hullDesc } from './ph
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { Particles, Pieces } from './fx.js';
 import { Enemy, loadEnemyModel, loadStaticModel, TYPES } from './enemy.js';
-import { sfx, resumeAudio } from './audio.js';
+import { sfx, resumeAudio, loadAlert, setListener, playAlertAt } from './audio.js';
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '1.7';
+export const VERSION = '1.8';
+loadAlert('sounds/alert.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
 
@@ -715,6 +716,8 @@ function updateButton(dt) {
 function pressSpawnButton(byEnemy) {
   if (btnCd > 0) return false;
   btnCd = 0.6; btnPress = 1; resumeAudio(); sfx.beep(); spawnEnemy();
+  // the alert rings out from high above the button
+  playAlertAt(new THREE.Vector3(ctx.button.pos.x, ctx.button.pos.y + 25, ctx.button.pos.z));
   if (!byEnemy) pulse(null, 0.6, 50);
   return true;
 }
@@ -727,6 +730,10 @@ renderer.setAnimationLoop(() => {
   updateLocomotion(dt);
   camera.updateMatrixWorld(true);
   camera.getWorldPosition(player.head);
+  {
+    const q = camera.getWorldQuaternion(tmpQ);
+    setListener(player.head, tmpV.set(0, 0, -1).applyQuaternion(q), tmpV2.set(0, 1, 0).applyQuaternion(q));
+  }
   updateTarget(dt);
   updateLeftInput();
 

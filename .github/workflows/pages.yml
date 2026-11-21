@@ -25,13 +25,14 @@ jobs:
         run: |
           mkdir _site
           cp index.html _site/
-          cp -r src models _site/
+          cp -r src models sounds _site/
           # cache-busting: give every module and asset a per-commit URL so browsers
           # (including the Quest browser) always load the newest build
           V=${GITHUB_SHA::8}
           sed -i "s#src/main.js#src/main.js?v=$V#" _site/index.html
           sed -i -E "s#(from '\./[A-Za-z0-9_-]+\.js)'#\1?v=$V'#g" _site/src/*.js
           sed -i -E "s#models/([a-z]+)\.glb#models/\1.glb?v=$V#g" _site/src/main.js
+          sed -i -E "s#sounds/([a-z]+)\.mp3#sounds/\1.mp3?v=$V#g" _site/src/main.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

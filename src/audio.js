@@ -1,6 +1,37 @@
 // Tiny procedural sound kit (WebAudio), no assets.
 let ctx = null, master = null, noiseBuf = null;
 
+// --- 3D one-shots (the spawn alert), positioned in the world with HRTF panning
+let alertData = null, alertBuf = null;
+export function loadAlert(url) {
+  fetch(url).then(r => r.arrayBuffer()).then(b => { alertData = b; decodeAlert(); }).catch(e => console.warn('alert sound failed to load', e));
+}
+function decodeAlert() {
+  if (!ctx || !alertData || alertBuf) return;
+  ctx.decodeAudioData(alertData.slice(0)).then(b => { alertBuf = b; }).catch(e => console.warn('alert decode failed', e));
+}
+// keep the listener on the player's head so positioned sounds come from the right place
+export function setListener(pos, fwd, up) {
+  if (!ctx) return;
+  const L = ctx.listener;
+  if (L.positionX) {
+    L.positionX.value = pos.x; L.positionY.value = pos.y; L.positionZ.value = pos.z;
+    L.forwardX.value = fwd.x; L.forwardY.value = fwd.y; L.forwardZ.value = fwd.z;
+    L.upX.value = up.x; L.upY.value = up.y; L.upZ.value = up.z;
+  } else { L.setPosition(pos.x, pos.y, pos.z); L.setOrientation(fwd.x, fwd.y, fwd.z, up.x, up.y, up.z); }
+}
+export function playAlertAt(pos, volume = 0.9) {
+  if (!ctx || ctx.state !== 'running' || !alertBuf) return;
+  const src = ctx.createBufferSource(); src.buffer = alertBuf;
+  const pan = ctx.createPanner();
+  pan.panningModel = 'HRTF'; pan.distanceModel = 'inverse'; pan.refDistance = 20; pan.rolloffFactor = 1;
+  if (pan.positionX) { pan.positionX.value = pos.x; pan.positionY.value = pos.y; pan.positionZ.value = pos.z; }
+  else pan.setPosition(pos.x, pos.y, pos.z);
+  const g = ctx.createGain(); g.gain.value = volume;
+  src.connect(g).connect(pan).connect(master);
+  src.start();
+}
+
 export function resumeAudio() {
   if (!ctx) {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -10,6 +41,7 @@ export function resumeAudio() {
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   }
   if (ctx.state === 'suspended') ctx.resume();
+  decodeAlert();
 }
 
 function env(g, t, a, peak, dec) {
