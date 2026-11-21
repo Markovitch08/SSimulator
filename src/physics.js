@@ -21,6 +21,8 @@ export const GROUPS = {
   // knock away the thing you're reaching for
   phand: grp(G.PHAND, G.GROUND | G.EALIVE | G.ESWORD),
   none: 0,
+  // a severed part on its way back to its owner: passes through bodies, still hittable
+  returning: grp(G.PIECE, G.GROUND | G.PSWORD | G.PHAND),
 };
 
 export const phys = {

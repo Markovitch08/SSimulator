@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, setListener, playAlertAt } from './audio.j
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '2.0';
+export const VERSION = '2.1';
 loadAlert('sounds/alert.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;

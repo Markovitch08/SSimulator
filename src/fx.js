@@ -109,7 +109,7 @@ export class Pieces {
     }
   }
   // a single chunk (e.g. torn-up floor) sitting at pos, for an enemy to throw
-  rubble(pos, color = 0x9aa1a9, size = 0.105) {
+  rubble(pos, color = 0x9aa1a9, size = 0.1575) {
     const mesh = new THREE.Mesh(shardGeo, lambert(color));
     mesh.scale.setScalar(size); mesh.castShadow = true; mesh.position.copy(pos);
     this.scene.add(mesh);
