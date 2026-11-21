@@ -55,6 +55,7 @@ export function hullDesc(geometries) {
 // Touching a body after it has been removed panics inside Rapier and poisons the
 // whole world, so removal is idempotent.
 const removed = new WeakSet();
+export const bodyAlive = body => !!body && !removed.has(body);
 export function removeBody(body) {
   if (!body || removed.has(body)) return;
   removed.add(body);

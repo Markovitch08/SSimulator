@@ -140,6 +140,7 @@ export class Pieces {
     }
   }
   remove(p) {
+    p.removed = true; // anyone still holding this entry (thrown object, grab) must let go
     const i = this.list.indexOf(p);
     if (i >= 0) this.list.splice(i, 1);
     this.scene.remove(p.mesh);

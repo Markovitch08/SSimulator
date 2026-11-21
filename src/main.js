@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, hullDesc } from './physics.js';
+import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, hullDesc, bodyAlive } from './physics.js';
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { Particles, Pieces } from './fx.js';
 import { Enemy, loadEnemyModel, loadStaticModel, TYPES } from './enemy.js';
@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, setListener, playAlertAt } from './audio.j
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '1.9';
+export const VERSION = '2.0';
 loadAlert('sounds/alert.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
@@ -598,7 +598,8 @@ function tryGrab() {
 // letting go: whatever was held keeps its momentum (so you can throw it)
 function releaseLeft(keepMomentum) {
   if (left.grabJoint) {
-    if (left.grabbed && world.getRigidBody(left.grabbed.handle)) world.removeImpulseJoint(left.grabJoint, true);
+    // if the held body was cleaned up, its joint went with it
+    if (bodyAlive(left.grabbed)) world.removeImpulseJoint(left.grabJoint, true);
     const e = left.grabbed && pieces.find(left.grabbed);
     if (e) e.thrownBy = null;
     left.grabJoint = null; left.grabbed = null;
@@ -623,6 +624,7 @@ function releaseLeft(keepMomentum) {
 function deflectThrown() {
   if (!ctx.flying.size) return;
   for (const entry of ctx.flying) {
+    if (entry.removed || !bodyAlive(entry.body)) { ctx.flying.delete(entry); continue; }
     const t = entry.body.translation(), pp = new THREE.Vector3(t.x, t.y, t.z);
     for (const w of weapons) {
       const p = new THREE.Vector3(), q = new THREE.Quaternion();

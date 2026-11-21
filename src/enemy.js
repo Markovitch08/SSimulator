@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RAPIER, phys, GROUPS, hullDesc, removeBody } from './physics.js';
+import { RAPIER, phys, GROUPS, hullDesc, removeBody, bodyAlive } from './physics.js';
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { sfx } from './audio.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -39,7 +39,7 @@ function geos() {
 
 // key, geometry type, damage multiplier, material slot
 const PARTS = [
-  ['pelvis', 'pelvis', 1.0, 1], ['chest', 'chest', 1.25, 0], ['head', 'head', 1.5, 0],
+  ['pelvis', 'pelvis', 1.0, 1], ['chest', 'chest', 1.25, 0], ['head', 'head', 1.3, 0],
   ['uArmL', 'uArm', 0.75, 0], ['lArmL', 'lArm', 0.6, 1], ['uArmR', 'uArm', 0.75, 0], ['lArmR', 'lArm', 0.6, 1],
   ['thighL', 'thigh', 0.85, 1], ['shinL', 'shin', 0.7, 0], ['thighR', 'thigh', 0.85, 1], ['shinR', 'shin', 0.7, 0],
 ];
@@ -354,7 +354,7 @@ export const TYPES = {
     armor: { chest: { hp: 280, segs: 8 }, pelvis: { hp: 170, segs: 6 }, uArmL: { hp: 110, segs: 4 }, uArmR: { hp: 110, segs: 4 }, thighL: { hp: 140, segs: 4 }, thighR: { hp: 140, segs: 4 } },
   },
 };
-const CUT_DMG = 60, HEAD_CUT_DMG = 100; // decapitation needs a really clean, hard cut
+const CUT_DMG = 60, HEAD_CUT_DMG = 120; // decapitation needs a really clean, hard cut
 // sword mount: a steel plate under the pommel sits on a ball joint just past the wrist
 const MOUNT = 0.135, PALM = 0.04;
 // muscle strength per part
@@ -896,7 +896,7 @@ export class Enemy {
       const q = basisQuat(d.normalize().negate(), toPl, new THREE.Quaternion());
       driveAng(ub, q, 30, 30, strength, h); driveAng(lb, q, 30, 30, strength, h);
     };
-    const alive = e => e && ctx.pieces.list.includes(e);
+    const alive = e => e && !e.removed && ctx.pieces.list.includes(e) && bodyAlive(e.body);
     switch (T.phase) {
       case 'idle': {
         if (T.t > 0) break;
@@ -947,7 +947,7 @@ export class Enemy {
     const pr = T.proj;
     if (pr) {
       pr.t += h;
-      if (!alive(pr.entry) || pr.t > 2 || !pr.entry.inFlight) { pr.entry.inFlight = false; ctx.flying.delete(pr.entry); T.proj = null; }
+      if (!alive(pr.entry) || pr.entry.removed || pr.t > 2 || !pr.entry.inFlight) { pr.entry.inFlight = false; ctx.flying.delete(pr.entry); T.proj = null; }
       else {
         const t = pr.body.translation(), v = pr.body.linvel();
         const cy = THREE.MathUtils.clamp(t.y, P.head.y - 0.8, P.head.y);
@@ -1267,7 +1267,7 @@ export class Enemy {
   }
 
   takeHit(hit) {
-    if (this.dead) return;
+    if (this.dead || this.lost.has(hit.part) || !bodyAlive(this.parts[hit.part].body)) return;
     if (this.armor && this.armor[hit.part] && this.armor[hit.part].hp > 0) { this.armorHit(hit.part, hit); return; }
     const ctx = this.ctx;
     this.hp -= hit.dmg;
@@ -1324,6 +1324,8 @@ export class Enemy {
       if (this.lost.has(k)) continue;
       this.lost.add(k);
       const part = this.parts[k];
+      const ar = this.armor && this.armor[k];
+      if (ar && ar.col) { phys.info.delete(ar.col.handle); ar.col.setCollisionGroups(GROUPS.piece); ar.col = null; ar.hp = 0; }
       part.col.setCollisionGroups(GROUPS.piece);
       part.body.setLinearDamping(0.05); part.body.setAngularDamping(1.2);
       ctx.pieces.add(part.mesh, part.body, 35, { loose: true, limb: true });
@@ -1361,7 +1363,7 @@ export class Enemy {
     this.dead = true;
     const ctx = this.ctx, w = phys.world;
     ctx.scene.remove(this.marker);
-    if (this.armor) for (const ar of Object.values(this.armor)) if (ar.col) { phys.info.delete(ar.col.handle); ar.col.setCollisionGroups(GROUPS.piece); }
+    if (this.armor) for (const [k, ar] of Object.entries(this.armor)) if (ar.col && !this.lost.has(k)) { phys.info.delete(ar.col.handle); ar.col.setCollisionGroups(GROUPS.piece); ar.col = null; }
     for (const part of Object.values(this.parts)) {
       if (this.lost.has(part.key)) continue;
       const body = part.body;
