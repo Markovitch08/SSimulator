@@ -354,6 +354,7 @@ export const TYPES = {
     armor: { chest: { hp: 280, segs: 8 }, pelvis: { hp: 170, segs: 6 }, uArmL: { hp: 110, segs: 4 }, uArmR: { hp: 110, segs: 4 }, thighL: { hp: 140, segs: 4 }, thighR: { hp: 140, segs: 4 } },
   },
 };
+for (const [k, t] of Object.entries(TYPES)) t.name = k;
 const CUT_DMG = 60, HEAD_CUT_DMG = 120; // decapitation needs a really clean, hard cut
 // sword mount: a steel plate under the pommel sits on a ball joint just past the wrist
 const MOUNT = 0.135, PALM = 0.04;

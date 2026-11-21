@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, setListener, playAlertAt } from './audio.j
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '2.1';
+export const VERSION = '2.2';
 loadAlert('sounds/alert.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
@@ -201,15 +201,16 @@ function drawWrist() {
   const g = wristCanvas.getContext('2d');
   g.clearRect(0, 0, 256, 96);
   g.fillStyle = 'rgba(20,24,30,.75)'; g.fillRect(0, 0, 256, 96);
-  g.fillStyle = '#fff'; g.font = 'bold 30px system-ui'; g.fillText(`HP ${Math.max(0, Math.round(player.hp))}   KILLS ${player.kills}`, 12, 40);
+  g.fillStyle = '#fff'; g.font = 'bold 26px system-ui'; g.fillText(`HP ${Math.max(0, Math.round(player.hp))}  W${run.wave}  ${run.score}`, 12, 40);
   g.font = '20px system-ui'; g.fillStyle = '#fff9'; g.fillText('v' + VERSION, 200, 88);
   g.fillStyle = '#0006'; g.fillRect(12, 58, 232, 18);
   g.fillStyle = '#d41f3a'; g.fillRect(12, 58, 232 * Math.max(0, player.hp) / 100, 18);
   wristTex.needsUpdate = true;
   hudHp.textContent = Math.max(0, Math.round(player.hp)); hudKills.textContent = player.kills;
+  document.getElementById('wave').textContent = run.wave || '-'; document.getElementById('score').textContent = run.score;
+  document.getElementById('best').textContent = run.best ? `(best ${run.best})` : '';
   hudBar.style.width = `${Math.max(0, player.hp)}%`;
 }
-drawWrist();
 
 // ---------------------------------------------------------------- controllers
 const grips = [0, 1].map(i => {
@@ -387,14 +388,132 @@ const ctx = {
     sfx.thump(Math.max(0.2, 1 - d / 12));
     pulse(null, 0.3 * Math.max(0, 1 - d / 10), 80);
   },
-  onKill() { player.kills++; drawWrist(); },
+  onKill(e, hit) { player.kills++; scoreKill(e, hit); drawWrist(); },
   damagePlayer(n) {
     if (player.dead) return;
-    player.hp -= n; flashMat.opacity = 0.55;
+    player.hp -= n; flashMat.color.setHex(0xff0022); flashMat.opacity = 0.55;
     sfx.hurt(); pulse(null, 1, 140); drawWrist();
-    if (player.hp <= 0) { player.dead = true; player.deadT = 2.5; msg.style.display = 'grid'; }
+    if (player.hp <= 0) { player.dead = true; player.deadT = 4; endRun(); }
   },
 };
+
+// ---------------------------------------------------------------- waves, score, healing
+// The simulation runs in rounds: each wave drops more (and tougher) enemies, with a short
+// breather between. Kills score points (with a streak multiplier and style bonuses) and heal.
+let best = 0;
+try { best = +localStorage.getItem('slopblade.best') || 0; } catch { /* no storage */ }
+const run = { wave: 0, phase: 'intro', t: 5, queue: [], spawnT: 0, score: 0, streak: 0, streakT: 0, best };
+const KILL_PTS = { richard: 100, andrew: 220, prisoner: 450, stitcher: 350 };
+
+function waveRoster(n) {
+  const list = [];
+  for (let i = 0; i < 2 + n; i++) {
+    const r = Math.random();
+    if (n >= 5 && r < 0.14) list.push('prisoner');
+    else if (n >= 4 && r < 0.26 && TYPES.stitcher) list.push('stitcher');
+    else if (n >= 3 && r < 0.5) list.push('andrew');
+    else list.push('richard');
+  }
+  return list;
+}
+function startRun() {
+  Object.assign(run, { wave: 0, phase: 'intro', t: 5, queue: [], score: 0, streak: 0, streakT: 0 });
+  board('SIMULATION ONLINE', 'first wave incoming');
+  drawWrist();
+}
+function startWave() {
+  run.wave++; run.phase = 'active'; run.queue = waveRoster(run.wave); run.spawnT = 0;
+  board(`WAVE ${run.wave}`, `${run.queue.length} hostiles`);
+  sfx.fanfare(); drawWrist();
+}
+function updateRun(dt) {
+  run.streakT -= dt;
+  if (run.streakT <= 0) run.streak = 0;
+  if (player.dead) return;
+  if (run.phase !== 'active') {
+    run.t -= dt;
+    if (run.t <= 0) startWave();
+    return;
+  }
+  const alive = enemies.filter(e => !e.dead).length;
+  run.spawnT -= dt;
+  if (run.queue.length && alive < Math.min(MAX_ALIVE, 2 + run.wave) && run.spawnT <= 0) { spawnEnemy(run.queue.shift()); run.spawnT = 1.3; }
+  if (!run.queue.length && alive === 0) {
+    const bonus = 500 * run.wave;
+    run.score += bonus; heal(25);
+    run.phase = 'break'; run.t = 8;
+    board(`WAVE ${run.wave} CLEARED`, `+${bonus}  ·  next wave in 8`);
+    sfx.fanfare(); saveBest(); drawWrist();
+  }
+}
+function heal(n) {
+  if (player.dead) return;
+  player.hp = Math.min(100, player.hp + n);
+  flashMat.color.setHex(0x22ff66); flashMat.opacity = Math.max(flashMat.opacity, 0.18);
+  sfx.heal(); drawWrist();
+}
+function scoreKill(e, hit) {
+  run.streak = run.streakT > 0 ? run.streak + 1 : 1;
+  run.streakT = 4;
+  const mult = Math.min(5, run.streak);
+  let pts = KILL_PTS[e.type.name] || 100, tag = '';
+  if (hit && hit.void) { pts += 200; tag = 'INTO THE VOID'; }
+  else if (hit && hit.part === 'head' && hit.cut) { pts += 150; tag = 'DECAPITATION'; }
+  else if (hit && hit.dmg === 0) { pts += 50; tag = 'BLED OUT'; }
+  else if (e.lost && e.lost.size >= 2) { pts += 100; tag = 'DISMANTLED'; }
+  pts *= mult;
+  run.score += pts;
+  const c = e.parts.chest.body.translation();
+  popup(`+${pts}${tag ? ' ' + tag : ''}${mult > 1 ? '  x' + mult : ''}`, new THREE.Vector3(c.x, c.y + 0.9, c.z), mult > 2 ? '#ffd23a' : '#ffffff');
+  sfx.chime(mult);
+  heal(tag === 'DECAPITATION' ? 16 : 10);
+  saveBest();
+}
+function saveBest() {
+  if (run.score > run.best) { run.best = run.score; try { localStorage.setItem('slopblade.best', run.best); } catch { /* ignore */ } }
+}
+function endRun() {
+  saveBest();
+  board('SIMULATION TERMINATED', `wave ${run.wave}  ·  score ${run.score}  ·  best ${run.best}`, '#d41f3a');
+  msg.innerHTML = `SIMULATION TERMINATED<br><span style="font-size:.45em">wave ${run.wave} · score ${run.score} · best ${run.best}</span>`;
+  msg.style.display = 'grid';
+}
+
+// big floating scoreboard above the arena, always turned toward the player
+const boardCanvas = document.createElement('canvas'); boardCanvas.width = 1024; boardCanvas.height = 256;
+const boardTex = new THREE.CanvasTexture(boardCanvas);
+const boardSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: boardTex, transparent: true, depthWrite: false }));
+boardSprite.scale.set(6, 1.5, 1);
+scene.add(boardSprite);
+let boardT = 0;
+function board(title, sub = '', color = '#1d2229') {
+  const g = boardCanvas.getContext('2d');
+  g.clearRect(0, 0, 1024, 256);
+  g.textAlign = 'center';
+  g.fillStyle = color; g.font = 'bold 110px system-ui'; g.fillText(title, 512, 130);
+  g.fillStyle = '#1d2229cc'; g.font = '52px system-ui'; g.fillText(sub, 512, 215);
+  boardTex.needsUpdate = true; boardT = 4; boardSprite.material.opacity = 1;
+}
+const popups = [];
+function popup(text, pos, color = '#fff') {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 96;
+  const g = c.getContext('2d'); g.textAlign = 'center'; g.font = 'bold 56px system-ui';
+  g.lineWidth = 8; g.strokeStyle = '#000a'; g.strokeText(text, 256, 68); g.fillStyle = color; g.fillText(text, 256, 68);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthTest: false }));
+  sp.scale.set(1.4, 0.26, 1); sp.position.copy(pos); sp.renderOrder = 998;
+  scene.add(sp); popups.push({ sp, t: 0 });
+}
+function updateBoards(dt) {
+  const f = camera.getWorldDirection(new THREE.Vector3()).setY(0).normalize();
+  boardSprite.position.set(player.head.x + f.x * 7, 3.4, player.head.z + f.z * 7);
+  boardT -= dt;
+  boardSprite.material.opacity = THREE.MathUtils.clamp(boardT, 0, 1);
+  for (let i = popups.length - 1; i >= 0; i--) {
+    const p = popups[i]; p.t += dt;
+    p.sp.position.y += dt * 0.5; p.sp.material.opacity = Math.max(0, 1 - p.t / 1.6);
+    if (p.t > 1.6) { scene.remove(p.sp); p.sp.material.map.dispose(); p.sp.material.dispose(); popups.splice(i, 1); }
+  }
+}
 
 function resetGame() {
   ctx.flying.clear();
@@ -403,6 +522,7 @@ function resetGame() {
   enemies.length = 0;
   pieces.clear(); particles.clear();
   player.hp = 100; player.dead = false; msg.style.display = 'none';
+  startRun();
   drawWrist();
 }
 
@@ -736,6 +856,7 @@ function pressSpawnButton(byEnemy) {
 // ---------------------------------------------------------------- main loop
 const clock = new THREE.Clock();
 let acc = 0;
+startRun();
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   updateLocomotion(dt);
@@ -768,6 +889,8 @@ renderer.setAnimationLoop(() => {
   pieces.update(dt);
   particles.update(dt);
   updateButton(dt);
+  updateRun(dt);
+  updateBoards(dt);
   for (const d of decor) { d.rotation.x += d.userData.spin.x * dt; d.rotation.y += d.userData.spin.y * dt; }
   flashMat.opacity = Math.max(0, flashMat.opacity - dt * 1.5);
   sun.position.set(player.head.x + 4, 9, player.head.z + 3); sun.target.position.set(player.head.x, 0, player.head.z);
@@ -778,4 +901,4 @@ renderer.setAnimationLoop(() => {
 });
 
 // test / debug hook
-window.game = { left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };
+window.game = { run, popups, left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };

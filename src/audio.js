@@ -110,5 +110,9 @@ export const sfx = {
     o.start(t); o.stop(t + dur + 0.05);
     noise(t, dur * 0.6, 900 * pitch, 1.2, 0.06 + i * 0.08, 'bandpass'); // breath
   },
+  // rising arpeggio for kills; higher with a bigger streak multiplier
+  chime(mult = 1) { if (!ok()) return; const t = ctx.currentTime; const base = 520 * Math.pow(1.12, mult - 1); [0, 0.06, 0.12].forEach((d, i) => tone(t + d, base * [1, 1.26, 1.5][i], base * [1, 1.26, 1.5][i], 0.18, 0.16, 'triangle')); },
+  fanfare() { if (!ok()) return; const t = ctx.currentTime; [0, 0.12, 0.24, 0.4].forEach((d, i) => tone(t + d, [392, 494, 587, 784][i], [392, 494, 587, 784][i], 0.35, 0.2, 'square')); },
+  heal() { if (!ok()) return; const t = ctx.currentTime; tone(t, 660, 1320, 0.25, 0.12, 'sine'); },
   beep() { if (!ok()) return; const t = ctx.currentTime; tone(t, 660, 990, 0.12, 0.25, 'triangle'); },
 };
