@@ -6,6 +6,11 @@ import { Particles, Pieces } from './fx.js';
 import { Enemy, loadEnemyModel } from './enemy.js';
 import { sfx, resumeAudio } from './audio.js';
 
+// Game version shown in the HUD, the VR wrist panel and the tab title.
+export const VERSION = '0.5';
+document.getElementById('ver').textContent = 'v' + VERSION;
+document.title = 'Slop Blade v' + VERSION;
+
 // ---------------------------------------------------------------- tuning
 // Player sword drive: a capped "spring" toward the hand (no infinite force),
 // so the blade lags, carries momentum and is stopped by what it hits.
@@ -161,6 +166,7 @@ function drawWrist() {
   g.clearRect(0, 0, 256, 96);
   g.fillStyle = 'rgba(20,24,30,.75)'; g.fillRect(0, 0, 256, 96);
   g.fillStyle = '#fff'; g.font = 'bold 30px system-ui'; g.fillText(`HP ${Math.max(0, Math.round(player.hp))}   KILLS ${player.kills}`, 12, 40);
+  g.font = '20px system-ui'; g.fillStyle = '#fff9'; g.fillText('v' + VERSION, 200, 88);
   g.fillStyle = '#0006'; g.fillRect(12, 58, 232, 18);
   g.fillStyle = '#d41f3a'; g.fillRect(12, 58, 232 * Math.max(0, player.hp) / 100, 18);
   wristTex.needsUpdate = true;

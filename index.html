@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Slop Blade v0.1</title>
+<title>Slop Blade</title>
 <style>
 :root{--bg:#dde1e6;--ink:#1d2229;--accent:#d41f3a;--panel:rgba(255,255,255,.72)}
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:system-ui,sans-serif}
@@ -34,7 +34,7 @@ canvas{display:block}
 <body>
 <div id="loading">Loading simulation…</div>
 <div id="hud">
-  <div class="panel"><b>HP</b> <span id="hp">100</span> · <b>Kills</b> <span id="kills">0</span><div id="bar"><i></i></div></div>
+  <div class="panel"><b id="ver" style="float:right;margin-left:16px;opacity:.6"></b><b>HP</b> <span id="hp">100</span> · <b>Kills</b> <span id="kills">0</span><div id="bar"><i></i></div></div>
   <div><button id="spawn" type="button">Spawn enemy (F)</button></div>
   <div class="panel" id="help">
     <b>Desktop:</b> mouse moves the sword · wheel = reach · right-drag or Q/E = turn · WASD = move<br>
