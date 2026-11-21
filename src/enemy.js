@@ -734,6 +734,12 @@ export class Enemy {
         }
         break;
       }
+      case 'levitate': {
+        crouch = -0.75 - 0.08 * Math.sin(this.stateT * 2.5); // pelvis raised: feet dangle above the floor
+        handT = [0.55, 1.6, 0.15]; bladeT = [0.6, 0.6, 0.2]; handK = 6; leanF = -0.12; turn = 1.5;
+        if (Math.random() < 0.08) ctx.particles.emit('dust', this.root.clone().setY(0.05), null, 1, 0.6);
+        break;
+      }
       case 'dodge': {
         want.copy(this.dodge); leanF = -0.12;
         if (this.stateT >= this.stateDur) {
@@ -851,6 +857,7 @@ export class Enemy {
     if (this.state === 'fall') lh = R(-0.35, 2.0, 0.15, tB);
     else if (this.state === 'attack' || this.state === 'block') lh = R(-0.28, 1.25, 0.3, tB);
     else if (this.state === 'charge') lh = R(-0.3, 1.0, -0.25, tB);
+    else if (this.state === 'levitate') lh = R(-0.55, 1.6, 0.15, tB);
     else if (this.state === 'leap') lh = R(-0.22, 1.6, 0.6, tB);
     else lh = R(-0.3, 1.0 + crouch * 0, 0.14 * Math.sin(this.phase + Math.PI), tB);
     if (leftH) {
@@ -867,7 +874,13 @@ export class Enemy {
     this.bodyState(dt);
     this.drive(dt);
     if (this.crippled && !this.type.regen) this.updateThrow(dt);
-    if (this.type.regen) this.updateRegen(dt);
+    if (this.type.regen) {
+      this.updateRegen(dt);
+      // while pieces are coming back he hangs in the air, arms out, waiting for them
+      const busy = this.returning.size > 0 || this.swordOwned;
+      if (busy && !['fall', 'levitate', 'down', 'getup'].includes(this.state)) { this.setState('levitate'); this.tonusTarget = 1; }
+      else if (!busy && this.state === 'levitate') { this.crippled = false; this.setState('land', 0.45); }
+    }
     if (this.revivals.length) this.updateRevivals(dt);
   }
 
@@ -1184,7 +1197,7 @@ export class Enemy {
     else if (this.wasUnsupported) { this.wasUnsupported = false; if (this.state !== 'down') this.tonusTarget = 1; }
     const dx = pb.x - this.root.x, dz = pb.z - this.root.z, d = Math.hypot(dx, dz);
     if (d > 0.2) { const f = 1 - 0.2 / d; this.root.x += dx * f; this.root.z += dz * f; }
-    if (this.state === 'down' || this.state === 'getup' || this.state === 'land' || this.state === 'leap') return;
+    if (this.state === 'down' || this.state === 'getup' || this.state === 'land' || this.state === 'leap' || this.state === 'levitate') return;
     const r = this.parts.chest.body.rotation();
     const up = tB.set(0, 1, 0).applyQuaternion(qA.set(r.x, r.y, r.z, r.w));
     if (pb.y < 0.5 || up.y < 0.3) this.knockDown(rnd(1.0, 1.6));
@@ -1275,7 +1288,15 @@ export class Enemy {
       e.body.collider(0).setCollisionGroups(GROUPS.returning);
       parts.push({ key: k, entry: e });
     }
-    this.revivals.push({ corpse, parts, item, t: 0 });
+    // a green light column marks the spot, a beam ties it to the pilot, the pieces glow
+    const column = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.8, 4, 6, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0x2fd14a, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }));
+    column.position.set(pt.x, 2, pt.z); ctx.scene.add(column);
+    const tether = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0x7dff6a }));
+    tether.frustumCulled = false; ctx.scene.add(tether);
+    for (const m of corpse.mats) m.emissive.setRGB(0.1, 0.6, 0.12);
+    for (const { entry } of parts) { const t = entry.body.translation(); entry.rise = new THREE.Vector3(t.x, Math.max(t.y, 0.3) + 0.9 + Math.random() * 0.5, t.z); }
+    this.revivals.push({ corpse, parts, item, t: 0, column, tether, spot: new THREE.Vector3(pt.x, 0, pt.z) });
     ctx.particles.emit('spark', new THREE.Vector3(pt.x, 0.5, pt.z), null, 20, 2);
     sfx.glitch();
   }
@@ -1284,18 +1305,28 @@ export class Enemy {
     for (const r of this.revivals.slice()) {
       r.t += h;
       let far = 0;
+      const rising = r.t < 0.9; // first the pieces lift off the floor, then they fly together
+      const pulse = 0.28 + 0.14 * Math.sin(r.t * 9);
+      r.column.material.opacity = pulse; r.column.rotation.y += h * 2;
+      const pc = this.parts.chest.body.translation();
+      r.tether.geometry.attributes.position.setXYZ(0, pc.x, pc.y + 0.3, pc.z);
+      r.tether.geometry.attributes.position.setXYZ(1, r.spot.x, 1.2, r.spot.z);
+      r.tether.geometry.attributes.position.needsUpdate = true;
+      if (Math.random() < 0.5) this.ctx.particles.emit('soul', new THREE.Vector3(r.spot.x + rnd(-0.5, 0.5), rnd(0, 0.4), r.spot.z + rnd(-0.5, 0.5)), null, 1, 0.5);
       for (const { key, entry } of r.parts) {
         if (!bodyAlive(entry.body)) continue;
         const tp = r.corpse.pose[key], b = entry.body, t = b.translation();
-        const d = tA.set(tp.p.x - t.x, tp.p.y - t.y, tp.p.z - t.z), dist = d.length();
+        const goal = rising && entry.rise ? entry.rise : tp.p;
+        const d = tA.set(goal.x - t.x, goal.y - t.y, goal.z - t.z), dist = rising ? 1 : d.length();
+        if (Math.random() < 0.25) this.ctx.particles.emit('soul', new THREE.Vector3(t.x, t.y, t.z), null, 1, 0.4);
         far = Math.max(far, dist);
-        const lv = b.linvel(), want = d.normalize().multiplyScalar(Math.min(3.5, dist * 3));
+        const lv = b.linvel(), want = d.normalize().multiplyScalar(rising ? Math.min(2.5, d.length() * 4) : Math.min(3.2, dist * 3));
         const dv = tB.set(want.x - lv.x, want.y - lv.y, want.z - lv.z); const m = 8 * h;
         if (dv.lengthSq() > m * m) dv.setLength(m);
         b.setLinvel({ x: lv.x + dv.x, y: lv.y + dv.y, z: lv.z + dv.z }, true);
         driveAng(b, tp.q, 10, 8, 80, h);
       }
-      if (far < 0.2 || r.t > 9) this.finishRevival(r);
+      if (!rising && (far < 0.2 || r.t > 9)) this.finishRevival(r);
     }
   }
 
@@ -1303,6 +1334,8 @@ export class Enemy {
   finishRevival(r) {
     const ctx = this.ctx, c = r.corpse;
     this.revivals.splice(this.revivals.indexOf(r), 1);
+    ctx.scene.remove(r.column, r.tether);
+    for (let i = 0; i < 30; i++) ctx.particles.emit('soul', r.spot.clone().setY(rnd(0.2, 1.8)), null, 1, 2);
     for (const { entry } of r.parts) { removeBody(entry.body); ctx.scene.remove(entry.mesh); entry.removed = true; }
     // his sword was in the pilot's hands; the new body brings its own
     if (r.item && this.stitched.includes(r.item)) {
@@ -1311,6 +1344,7 @@ export class Enemy {
     }
     c.revived = true;
     const e = new Enemy(ctx, c.root, c.type.name, { revive: { yaw: c.yaw } });
+    e.revivedGlow = true;
     ctx.enemies.push(e);
     ctx.particles.emit('spark', c.root.clone().setY(1.2), null, 30, 3);
     sfx.thump(0.8); sfx.grunt(1, e.voice);
@@ -1321,6 +1355,8 @@ export class Enemy {
   abortRevivals() {
     for (const r of this.revivals) {
       r.corpse.reviving = null;
+      this.ctx.scene.remove(r.column, r.tether);
+      for (const m of r.corpse.mats) m.emissive.setRGB(0, 0, 0);
       for (const { entry } of r.parts) {
         if (!bodyAlive(entry.body)) continue;
         entry.body.setGravityScale(1, true); entry.body.setAngularDamping(1.2);
@@ -1335,7 +1371,8 @@ export class Enemy {
     if (this.dead) return;
     for (const it of this.stitched) { const t = it.entry.body.translation(), r = it.entry.body.rotation(); it.entry.mesh.position.set(t.x, t.y, t.z); it.entry.mesh.quaternion.set(r.x, r.y, r.z, r.w); }
     const f = this.flash;
-    for (const m of this.mats) m.emissive.setRGB(f, f, f);
+    const gl = this.revivedGlow ? 0.35 + 0.12 * Math.sin(performance.now() / 180) : 0;
+    for (const m of this.mats) m.emissive.setRGB(f, f + gl, f);
     for (const part of Object.values(this.parts)) {
       if (this.lost.has(part.key) && !this.type.regen) continue;
       const t = part.body.translation(), r = part.body.rotation();
@@ -1533,10 +1570,10 @@ export class Enemy {
     // the stump keeps bleeding from the parent's joint
     const local = jp.clone().sub(tA.set(pt.x, pt.y, pt.z)).applyQuaternion(qA.set(pr.x, pr.y, pr.z, pr.w).invert());
     this.stumps.push({ part: parentKey, local });
-    ctx.particles.emit('blood', jp, hit.dir, 40, 3);
-    ctx.pieces.shards(jp, hit.dir, Math.min(hit.speed, 8), 0xb3001b, 4);
+    ctx.particles.emit('blood', jp, hit.dir, 22, 3);
+    ctx.pieces.shards(jp, hit.dir, Math.min(hit.speed, 8), 0xb3001b, 2);
     sfx.splat(); sfx.grunt(1, this.voice * 1.1, 0.6);
-    if (key.startsWith('thigh') || key.startsWith('shin')) { this.crippled = true; this.knockDown(1e9); }
+    if (key.startsWith('thigh') || key.startsWith('shin')) { this.crippled = true; if (!this.type.regen) this.knockDown(1e9); }
   }
 
   // Severed parts drift back to the joint they came from and snap on again; his dropped sword
@@ -1610,7 +1647,8 @@ export class Enemy {
     const t = this.parts[key].body.translation();
     this.ctx.particles.emit('blood', new THREE.Vector3(t.x, t.y, t.z), null, 8, 1);
     if (this.crippled && !['thighL', 'shinL', 'thighR', 'shinR'].some(k => this.lost.has(k))) {
-      this.crippled = false; this.tonusTarget = 1; this.setState('getup', 1.1);
+      this.crippled = false; this.tonusTarget = 1;
+      if (!this.type.regen) this.setState('getup', 1.1); // the prisoner just keeps floating until he's whole
     }
   }
 
@@ -1695,15 +1733,15 @@ export class Enemy {
       const v = pb.linvel();
       pb.setLinvel({ x: v.x + out.x * 2 + (Math.random() - 0.5) * 2, y: v.y + 1.5 + Math.random() * 1.5, z: v.z + out.z * 2 + (Math.random() - 0.5) * 2 }, true);
       pb.setAngvel({ x: (Math.random() - 0.5) * 16, y: (Math.random() - 0.5) * 16, z: (Math.random() - 0.5) * 16 }, true);
-      ctx.particles.emit('blood', jp, out, 18, 2.2);
-      ctx.pieces.shards(jp, out, 2, 0xb3001b, 2);
+      ctx.particles.emit('blood', jp, out, 10, 2.2);
+      ctx.pieces.shards(jp, out, 2, 0xb3001b, 1);
     }
 
     // the sword drops as a loose physics piece
     this.dropSword(); this.dropSword2();
 
-    ctx.pieces.shards(hit.point, hit.dir, Math.min(hit.speed, 10), 0xd41f3a, 8);
-    ctx.particles.emit('blood', hit.point, hit.dir, 70, 3.5);
+    ctx.pieces.shards(hit.point, hit.dir, Math.min(hit.speed, 10), 0xd41f3a, 4);
+    ctx.particles.emit('blood', hit.point, hit.dir, 35, 3.5);
     for (const m of this.mats) m.emissive.setRGB(0, 0, 0);
     sfx.splat(); sfx.grunt(1, this.voice * 0.85, 0.7);
     ctx.onKill(this, hit);

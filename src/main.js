@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, setListener, playAlertAt } from './audio.j
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '2.5';
+export const VERSION = '2.6';
 loadAlert('sounds/alert.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
@@ -221,6 +221,54 @@ function drawWrist() {
   hudBar.style.width = `${Math.max(0, player.hp)}%`;
 }
 
+// ---------------------------------------------------------------- character spawn submenu
+// VR: left Y opens it above the left hand, left stick up/down picks, X spawns. Desktop: keys 1-4.
+// Only between waves.
+const MENU_TYPES = [['richard', 'Richard'], ['andrew', 'Andrew'], ['prisoner', 'Prisoner'], ['pilot', 'Pilot']];
+const menu = { open: false, sel: 0, prevY: false, prevX: false, latch: false };
+const menuCanvas = document.createElement('canvas'); menuCanvas.width = 512; menuCanvas.height = 320;
+const menuTex = new THREE.CanvasTexture(menuCanvas);
+const spawnMenu = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.125), new THREE.MeshBasicMaterial({ map: menuTex, transparent: true, side: THREE.DoubleSide }));
+spawnMenu.visible = false;
+function drawMenu() {
+  const g = menuCanvas.getContext('2d'), locked = run.phase === 'active';
+  g.clearRect(0, 0, 512, 320);
+  g.fillStyle = 'rgba(20,24,30,.88)'; g.fillRect(0, 0, 512, 320);
+  g.fillStyle = '#fff'; g.font = 'bold 30px system-ui'; g.fillText('SPAWN', 24, 44);
+  g.font = '19px system-ui'; g.fillStyle = locked ? '#ff6a6a' : '#fff9';
+  g.fillText(locked ? 'locked while a wave is running' : 'stick: choose · X: spawn · Y: close', 130, 42);
+  MENU_TYPES.forEach(([, label], i) => {
+    const y = 96 + i * 56, on = i === menu.sel;
+    if (on) { g.fillStyle = locked ? '#ffffff22' : '#d41f3a'; g.fillRect(16, y - 34, 480, 48); }
+    g.fillStyle = locked ? '#ffffff55' : '#fff'; g.font = (on ? 'bold ' : '') + '28px system-ui'; g.fillText(label, 36, y);
+  });
+  menuTex.needsUpdate = true;
+}
+function spawnFromMenu(i) {
+  if (run.phase === 'active' || player.dead) { sfx.beep(); return; }
+  resumeAudio();
+  spawnEnemy(MENU_TYPES[i][0]);
+  pulse('left', 0.4, 40);
+}
+function updateSpawnMenu() {
+  if (!renderer.xr.isPresenting) return;
+  let gp = null;
+  for (const src of renderer.xr.getSession().inputSources) if (src.handedness === 'left' && src.gamepad) gp = src.gamepad;
+  if (!gp) return;
+  const y = !!gp.buttons[5]?.pressed, x = !!gp.buttons[4]?.pressed, ay = gp.axes[3] || 0;
+  if (y && !menu.prevY) { menu.open = !menu.open; spawnMenu.visible = menu.open; drawMenu(); pulse('left', 0.3, 30); }
+  menu.prevY = y;
+  if (!menu.open) { menu.prevX = x; return; }
+  if (Math.abs(ay) > 0.6 && !menu.latch) { menu.sel = (menu.sel + (ay > 0 ? 1 : -1) + MENU_TYPES.length) % MENU_TYPES.length; menu.latch = true; drawMenu(); pulse('left', 0.15, 15); }
+  if (Math.abs(ay) < 0.3) menu.latch = false;
+  if (x && !menu.prevX) spawnFromMenu(menu.sel);
+  menu.prevX = x;
+}
+addEventListener('keydown', e => {
+  const i = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
+  if (i >= 0 && !e.repeat) spawnFromMenu(i);
+});
+
 // ---------------------------------------------------------------- controllers
 const grips = [0, 1].map(i => {
   const grip = renderer.xr.getControllerGrip(i);
@@ -236,6 +284,8 @@ function setupHand(grip) {
     grip.add(fist);
     wrist.position.set(0.0, 0.03, 0.09); wrist.rotation.set(-Math.PI / 2.4, 0, 0);
     grip.add(wrist);
+    spawnMenu.position.set(0, 0.12, 0.02); spawnMenu.rotation.set(-0.5, 0, 0);
+    grip.add(spawnMenu);
   }
 }
 const handGrip = h => grips.find(g => g.userData.hand === h);
@@ -330,7 +380,7 @@ function updateLocomotion(dt) {
       const gp = src.gamepad; if (!gp) continue;
       const h = src.handedness;
       const ax = gp.axes[2] || 0, ay = gp.axes[3] || 0;
-      if (h === 'left' && Math.hypot(ax, ay) > 0.15) {
+      if (h === 'left' && !menu.open && Math.hypot(ax, ay) > 0.15) {
         const f = camera.getWorldDirection(tmpV).setY(0).normalize();
         const r = tmpV2.set(-f.z, 0, f.x);
         dolly.position.addScaledVector(f, -ay * 2.2 * dt).addScaledVector(r, ax * 2.2 * dt);
@@ -444,7 +494,7 @@ function startWave() {
   pieces.clear(); particles.clear(); ctx.flying.clear();
   run.wave++; run.phase = 'active'; run.queue = waveRoster(run.wave); run.spawnT = 0;
   board(`WAVE ${run.wave}`, `${run.queue.length} hostiles`);
-  sfx.fanfare(); drawWrist();
+  sfx.fanfare(); drawWrist(); drawMenu();
 }
 function updateRun(dt) {
   run.streakT -= dt;
@@ -459,7 +509,7 @@ function updateRun(dt) {
     run.score += bonus; heal(25);
     run.phase = 'break';
     board(`WAVE ${run.wave} CLEARED  +${bonus}`, `press the spawn button for wave ${run.wave + 1}`, '#1d2229', true);
-    sfx.fanfare(); saveBest(); drawWrist();
+    sfx.fanfare(); saveBest(); drawWrist(); drawMenu();
   }
 }
 // ---------------------------------------------------------------- simulation glitches
@@ -970,6 +1020,7 @@ renderer.setAnimationLoop(() => {
   }
   updateTarget(dt);
   updateLeftInput();
+  updateSpawnMenu();
 
   acc += dt;
   let n = 0;
@@ -1004,4 +1055,4 @@ renderer.setAnimationLoop(() => {
 });
 
 // test / debug hook
-window.game = { glitch, GLITCHES, run, popups, left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };
+window.game = { menu, spawnFromMenu, glitch, GLITCHES, run, popups, left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };

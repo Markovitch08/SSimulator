@@ -63,7 +63,12 @@ export function hullDesc(geometries) {
   const pts = new Float32Array(n);
   let o = 0;
   for (const g of list) { pts.set(g.attributes.position.array, o); o += g.attributes.position.array.length; }
-  return RAPIER.ColliderDesc.convexHull(pts);
+  // detailed meshes make heavy hulls (slow collisions): build the hull from at most ~240 points
+  const count = pts.length / 3, MAXP = 240;
+  if (count <= MAXP) return RAPIER.ColliderDesc.convexHull(pts);
+  const step = count / MAXP, few = new Float32Array(MAXP * 3);
+  for (let i = 0; i < MAXP; i++) { const k = Math.floor(i * step) * 3; few[i * 3] = pts[k]; few[i * 3 + 1] = pts[k + 1]; few[i * 3 + 2] = pts[k + 2]; }
+  return RAPIER.ColliderDesc.convexHull(few);
 }
 
 // Touching a body after it has been removed panics inside Rapier and poisons the

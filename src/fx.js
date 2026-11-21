@@ -3,7 +3,7 @@ import { RAPIER, phys, GROUPS, removeBody } from './physics.js';
 import { facet, lambert } from './lowpoly.js';
 
 // ---------- Triangle particles (blood, sparks, dust) ----------
-const MAX = 900;
+const MAX = 450;
 const triGeo = (() => {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute([0, 0.6, 0, -0.52, -0.3, 0, 0.52, -0.3, 0], 3));
@@ -35,9 +35,9 @@ export class Particles {
         rot: new THREE.Euler(Math.random() * 6, Math.random() * 6, Math.random() * 6),
         spin: (Math.random() - 0.5) * 20,
         size: blood ? 0.025 + Math.random() * 0.05 : kind === 'dust' ? 0.06 + Math.random() * 0.08 : 0.015 + Math.random() * 0.02,
-        life: blood ? 14 : kind === 'dust' ? 0.9 : 0.35,
+        life: blood ? 8 : kind === 'dust' ? 0.9 : kind === 'soul' ? 0.9 : 0.35,
         age: 0, landed: false,
-        color: blood ? (Math.random() < 0.5 ? 0xb3001b : 0xe0102f) : kind === 'dust' ? 0xb8bec6 : 0xfff3c4,
+        color: blood ? (Math.random() < 0.5 ? 0xb3001b : 0xe0102f) : kind === 'dust' ? 0xb8bec6 : kind === 'soul' ? (Math.random() < 0.5 ? 0x7dff6a : 0x2fd14a) : 0xfff3c4,
       });
     }
   }
@@ -49,7 +49,8 @@ export class Particles {
       if (p.age > p.life) continue;
       keep.push(p);
       if (!p.landed) {
-        if (p.kind !== 'dust') p.vel.y -= 9.8 * dt; else p.vel.multiplyScalar(Math.exp(-3 * dt));
+        if (p.kind === 'soul') { p.vel.multiplyScalar(Math.exp(-2 * dt)); p.vel.y += 1.5 * dt; }
+        else if (p.kind !== 'dust') p.vel.y -= 9.8 * dt; else p.vel.multiplyScalar(Math.exp(-3 * dt));
         p.pos.addScaledVector(p.vel, dt);
         p.rot.x += p.spin * dt; p.rot.y += p.spin * 0.7 * dt;
         if (p.pos.y <= 0.003 && p.kind === 'blood') {
@@ -77,18 +78,20 @@ export class Particles {
 }
 
 // ---------- Physics pieces (dead body parts, swords, shards) ----------
-const MAX_PIECES = 160;
+const MAX_PIECES = 80;
 const shardGeo = facet(new THREE.TetrahedronGeometry(1, 0));
 
 export class Pieces {
   constructor(scene) { this.scene = scene; this.list = []; }
   // meta.loose: a free object someone could pick up and throw; meta.sword: a usable sword
   add(mesh, body, life = 30, meta = {}) {
-    const entry = { mesh, body, age: 0, life, base: mesh.scale.clone(), ...meta };
+    // debris doesn't cast shadows: dozens of shadow-casting pieces were a big part of the slowdown
+    mesh.traverse(o => { if (o.isMesh) o.castShadow = false; });
+    const entry = { mesh, body, age: 0, life: Math.min(life, 22), base: mesh.scale.clone(), ...meta };
     this.list.push(entry);
-    return entry;
     phys.info.set(body.collider(0).handle, { kind: 'piece' });
     while (this.list.length > MAX_PIECES) this.remove(this.list[0]);
+    return entry;
   }
   shards(pos, dir, speed, color, n) {
     const mat = lambert(color);
@@ -132,6 +135,7 @@ export class Pieces {
   update(dt) {
     for (const p of this.list.slice()) {
       p.age += dt;
+      if (p.body.isSleeping() && p.age < p.life - 1) continue; // resting debris: nothing to update
       const t = p.body.translation(), r = p.body.rotation();
       p.mesh.position.set(t.x, t.y, t.z);
       p.mesh.quaternion.set(r.x, r.y, r.z, r.w);
