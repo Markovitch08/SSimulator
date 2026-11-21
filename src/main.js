@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, setListener, playAlertAt } from './audio.j
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '2.3';
+export const VERSION = '2.4';
 loadAlert('sounds/alert.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
@@ -715,6 +715,13 @@ function processContacts(w, h, hitThisStep) {
         sfx.clang(Math.min(1, v.length() / 8 + (parried ? 0.4 : 0)));
         particles.emit('spark', pt, null, parried ? 14 : 6, 2.5);
         pulse(w.hand, parried ? 1 : 0.5, parried ? 90 : 40);
+      }
+    } else if (info.kind === 'stitched') {
+      // a hard hit knocks stitched scrap off the Stitcher
+      if (v.length() > 5 && !info.enemy.dead) {
+        info.enemy.unstitch(info.item, v.clone().multiplyScalar(0.6).add(new THREE.Vector3(0, 2, 0)));
+        sfx.clang(0.6); particles.emit('spark', pt, null, 12, 2.5); pulse(w.hand, 0.6, 50);
+        run.score += 25; popup('+25 SCRAP', pt.clone().add(new THREE.Vector3(0, 0.3, 0)), '#9fe08a');
       }
     } else if (info.kind === 'piece' && pieceSoundCd <= 0 && v.length() > 3) {
       pieceSoundCd = 0.1; sfx.thump(Math.min(0.6, v.length() / 15)); pulse(w.hand, 0.25, 25);
