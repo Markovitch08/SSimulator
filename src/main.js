@@ -3,7 +3,7 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, hullDesc } from './physics.js';
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { Particles, Pieces } from './fx.js';
-import { Enemy } from './enemy.js';
+import { Enemy, loadEnemyModel } from './enemy.js';
 import { sfx, resumeAudio } from './audio.js';
 
 // ---------------------------------------------------------------- tuning
@@ -91,6 +91,7 @@ const decor = [];
 // ---------------------------------------------------------------- physics + game objects
 const loading = document.getElementById('loading');
 await initPhysics();
+try { await loadEnemyModel('models/richard.glb'); } catch (e) { console.warn('Enemy model failed to load, using the built-in body:', e); }
 loading.remove();
 const world = phys.world;
 

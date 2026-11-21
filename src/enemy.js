@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RAPIER, phys, GROUPS, hullDesc, removeBody } from './physics.js';
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { sfx } from './audio.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ---------------------------------------------------------------------------
 // Enemy = hidden procedural "target skeleton" (two-bone IK, no keyframed
@@ -46,7 +47,128 @@ const JOINTS = [
   ['pelvis', 'thighL'], ['thighL', 'shinL'], ['pelvis', 'thighR'], ['thighR', 'shinR'],
 ];
 
-const UARM = 0.3, LARM = 0.29, THIGH = 0.44, SHIN = 0.44;
+// Rig proportions. Defaults fit the procedural body; loadEnemyModel() replaces them with
+// measurements taken from a skinned model's skeleton.
+const RIG = {
+  pelvisH: 0.92, chest: [0, 0.08, 0], head: [0, 0.5, 0], shoulder: [0.22, 0.44, 0], hip: [0.1, -0.07, 0],
+  UARM: 0.3, LARM: 0.29, THIGH: 0.44, SHIN: 0.44, ankleY: 0.06,
+};
+let MODEL = null; // { geos: {partKey: geometry}, map }
+
+// Cut a skinned humanoid (glTF) into the 11 rigid ragdoll parts by dominant bone weight,
+// re-expressed in each part's local frame (origin at the proximal joint, limb along -Y,
+// +Z forward), and measure the rig from its bones.
+export async function loadEnemyModel(url, targetHeight = 1.85) {
+  const gltf = await new GLTFLoader().loadAsync(url);
+  gltf.scene.updateMatrixWorld(true);
+  let mesh = null;
+  gltf.scene.traverse(o => { if (o.isSkinnedMesh && !mesh) mesh = o; });
+  if (!mesh) throw new Error('model has no skinned mesh');
+  const geo = mesh.geometry, bones = mesh.skeleton.bones;
+  const N = geo.attributes.position.count;
+  let verts = [];
+  for (let i = 0; i < N; i++) verts.push(mesh.getVertexPosition(i, new THREE.Vector3()).applyMatrix4(mesh.matrixWorld));
+  let bp = bones.map(b => b.getWorldPosition(new THREE.Vector3()));
+  // normalise: feet on the floor, centred, scaled to targetHeight
+  const box = new THREE.Box3().setFromPoints(verts);
+  const sc = targetHeight / (box.max.y - box.min.y);
+  const off = new THREE.Vector3((box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2);
+  const norm = v => v.sub(off).multiplyScalar(sc);
+  verts.forEach(norm); bp.forEach(norm);
+
+  const kindOf = name => {
+    const n = name.toLowerCase();
+    if (/rodik|pole|target|end$/.test(n)) return null;
+    if (/spine2|chest|upperchest/.test(n)) return 'chest';
+    if (/spine|hip|pelvis|root/.test(n)) return 'pelvis';
+    if (/neck|head/.test(n)) return 'head';
+    if (/upperarm|shoulder|clavicle/.test(n)) return 'uArm';
+    if (/forearm|foearm|lowerarm|hand|wrist|manik|finger/.test(n)) return 'lArm';
+    if (/thigh|upleg|upperleg/.test(n)) return 'thigh';
+    if (/calf|shin|lowerleg|knee|foot|toe|ankle|pieik/.test(n)) return 'shin';
+    return null;
+  };
+  const find = (re, sign) => bones.findIndex((b, i) => re.test(b.name.toLowerCase()) && (sign === 0 || Math.sign(bp[i].x) === sign));
+  const need = (re, sign) => { const i = find(re, sign); if (i < 0) throw new Error('model missing bone ' + re); return bp[i].clone(); };
+  // face +Z: toes should be in front of the ankles
+  const ankleR = need(/^foot|ankle/, 0);
+  const toeVerts = verts.filter(v => v.y < ankleR.y + 0.05 && Math.abs(v.x - ankleR.x) < 0.15);
+  const toeZ = toeVerts.reduce((a, v) => a + v.z - ankleR.z, 0);
+  if (toeZ < 0) { verts.forEach(v => { v.x = -v.x; v.z = -v.z; }); bp.forEach(v => { v.x = -v.x; v.z = -v.z; }); }
+  // the enemy's right is -X when facing +Z
+  const sideOf = i => (bp[i].x > 0 ? 'L' : 'R');
+  const partOfBone = bones.map((b, i) => {
+    const k = kindOf(b.name);
+    if (!k) return null;
+    return (k === 'pelvis' || k === 'chest' || k === 'head') ? k : k + sideOf(i);
+  });
+
+  const P0 = need(/spine1|^hips?|pelvis/, 0), C0 = need(/spine2|chest/, 0), H0 = need(/neck/, 0);
+  const J = {};
+  for (const [side, sg] of [['L', 1], ['R', -1]]) {
+    J['sh' + side] = need(/shoulder|upperarm/, sg); J['el' + side] = need(/foearm|forearm|lowerarm/, sg);
+    J['ha' + side] = need(/^hand/, sg); J['hip' + side] = need(/thigh|upleg/, sg);
+    J['kn' + side] = need(/calf|shin|lowerleg/, sg); J['an' + side] = need(/^foot/, sg);
+  }
+  const fwd = new THREE.Vector3(0, 0, 1);
+  const frames = { pelvis: [P0, new THREE.Quaternion()], chest: [C0, new THREE.Quaternion()], head: [H0, new THREE.Quaternion()] };
+  for (const S of ['L', 'R']) {
+    frames['uArm' + S] = [J['sh' + S], basisQuat(J['sh' + S].clone().sub(J['el' + S]), fwd, new THREE.Quaternion())];
+    frames['lArm' + S] = [J['el' + S], basisQuat(J['el' + S].clone().sub(J['ha' + S]), fwd, new THREE.Quaternion())];
+    frames['thigh' + S] = [J['hip' + S], basisQuat(J['hip' + S].clone().sub(J['kn' + S]), fwd, new THREE.Quaternion())];
+    frames['shin' + S] = [J['kn' + S], basisQuat(J['kn' + S].clone().sub(J['an' + S]), fwd, new THREE.Quaternion())];
+  }
+
+  // assign each triangle to the part with the most skin weight on its corners
+  const si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight, uv = geo.attributes.uv;
+  const idx = geo.index ? geo.index.array : [...Array(N).keys()];
+  const out = {};
+  for (const k of Object.keys(frames)) out[k] = { pos: [], uv: [] };
+  const score = {};
+  for (let t = 0; t < idx.length; t += 3) {
+    for (const k in score) delete score[k];
+    for (let c = 0; c < 3; c++) {
+      const v = idx[t + c];
+      for (let j = 0; j < 4; j++) {
+        const part = partOfBone[si.getComponent(v, j)];
+        if (part) score[part] = (score[part] || 0) + sw.getComponent(v, j);
+      }
+    }
+    let best = null, bw = 0;
+    for (const k in score) if (score[k] > bw) { bw = score[k]; best = k; }
+    if (!best) continue;
+    const [o, q] = frames[best];
+    const qi = q.clone().invert();
+    for (let c = 0; c < 3; c++) {
+      const v = idx[t + c];
+      const l = verts[v].clone().sub(o).applyQuaternion(qi);
+      out[best].pos.push(l.x, l.y, l.z);
+      if (uv) out[best].uv.push(uv.getX(v), uv.getY(v));
+    }
+  }
+  const geos = {};
+  for (const [k, d] of Object.entries(out)) {
+    if (d.pos.length < 12 * 3) throw new Error('model part too small: ' + k);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(d.pos, 3));
+    if (d.uv.length) g.setAttribute('uv', new THREE.Float32BufferAttribute(d.uv, 2));
+    g.computeVertexNormals();
+    geos[k] = g;
+  }
+  const map = mesh.material.map || null;
+  if (map) { map.magFilter = THREE.NearestFilter; map.needsUpdate = true; }
+
+  const rel = (a, b) => a.clone().sub(b).toArray();
+  Object.assign(RIG, {
+    pelvisH: P0.y - 0.03, chest: rel(C0, P0), head: rel(H0, C0),
+    shoulder: [Math.abs(J.shR.x - C0.x), J.shR.y - C0.y, J.shR.z - C0.z],
+    hip: [Math.abs(J.hipR.x - P0.x), J.hipR.y - P0.y, J.hipR.z - P0.z],
+    UARM: J.shR.distanceTo(J.elR), LARM: J.elR.distanceTo(J.haR),
+    THIGH: J.hipR.distanceTo(J.knR), SHIN: J.knR.distanceTo(J.anR), ankleY: J.anR.y,
+  });
+  MODEL = { geos, map };
+  return RIG;
+}
 
 // Attack move set: hand position + blade direction keyframes (right-positive local space)
 // [windup, mid, end]. w = windup time range, s = strike time, lunge = forward speed during
@@ -151,14 +273,16 @@ export class Enemy {
     this.pose = {};
 
     // materials per enemy so hit flashes are individual
-    this.mats = [lambert(0xd41f3a, { emissive: 0x000000 }), lambert(0x8f1024, { emissive: 0x000000 })];
+    this.mats = MODEL
+      ? [new THREE.MeshLambertMaterial({ map: MODEL.map, flatShading: true, emissive: 0x000000 })]
+      : [lambert(0xd41f3a, { emissive: 0x000000 }), lambert(0x8f1024, { emissive: 0x000000 })];
     this.eyeMat = new THREE.MeshBasicMaterial({ color: 0xffd23a });
-    const G = geos();
+    const partGeos = (key, type) => (MODEL ? [MODEL.geos[key]] : geos()[type]);
     this.parts = {};
     for (const [key, type, mult, slot] of PARTS) {
       const group = new THREE.Group();
-      for (const g of G[type]) { const m = new THREE.Mesh(g, this.mats[slot]); m.castShadow = true; group.add(m); }
-      if (key === 'head') {
+      for (const g of partGeos(key, type)) { const m = new THREE.Mesh(g, this.mats[MODEL ? 0 : slot]); m.castShadow = true; group.add(m); }
+      if (key === 'head' && !MODEL) {
         for (const s of [-1, 1]) {
           const eye = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.01, 3).rotateX(Math.PI / 2), this.eyeMat);
           eye.position.set(s * 0.045, 0.19, 0.108); eye.rotation.z = s * 0.5 + Math.PI;
@@ -179,7 +303,7 @@ export class Enemy {
       const ps = this.pose[part.key];
       part.body = w.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(ps.p.x, ps.p.y, ps.p.z).setRotation(ps.q)
         .setLinearDamping(0.3).setAngularDamping(2.5).setCcdEnabled(true));
-      part.col = w.createCollider(hullDesc(G[part.type]).setDensity(985).setFriction(0.45).setCollisionGroups(GROUPS.ealive), part.body);
+      part.col = w.createCollider(hullDesc(partGeos(part.key, part.type)).setDensity(985).setFriction(0.45).setCollisionGroups(GROUPS.ealive), part.body);
       phys.info.set(part.col.handle, { kind: 'enemy', enemy: this, part: part.key });
     }
     const sp = this.pose.sword;
@@ -196,7 +320,7 @@ export class Enemy {
       j.setContactsEnabled(false);
       this.joints[b] = j;
     }
-    this.joints.sword = w.createImpulseJoint(RAPIER.JointData.spherical({ x: 0, y: -LARM, z: 0 }, { x: 0, y: 0, z: 0 }), this.parts.lArmR.body, this.swordBody, true);
+    this.joints.sword = w.createImpulseJoint(RAPIER.JointData.spherical({ x: 0, y: -RIG.LARM, z: 0 }, { x: 0, y: 0, z: 0 }), this.parts.lArmR.body, this.swordBody, true);
     this.joints.sword.setContactsEnabled(false);
     this.tonus = 1; this.tonusTarget = 1;
     this.syncMeshes();
@@ -451,23 +575,23 @@ export class Enemy {
     const chestQ = new THREE.Quaternion().copy(leanQ).multiply(yq).multiply(local);
 
     const P = this.pose;
-    P.pelvis.p.copy(this.root).add(tA.set(0, 0.92 - bob - (this.crouch || 0), 0));
+    P.pelvis.p.copy(this.root).add(tA.set(0, RIG.pelvisH - bob - (this.crouch || 0), 0));
     P.pelvis.q.copy(pelvisQ);
-    P.chest.p.copy(P.pelvis.p).add(tA.set(0, 0.08, 0).applyQuaternion(pelvisQ));
+    P.chest.p.copy(P.pelvis.p).add(tA.fromArray(RIG.chest).applyQuaternion(pelvisQ));
     P.chest.q.copy(chestQ);
-    P.head.p.copy(P.chest.p).add(tA.set(0, 0.5, 0).applyQuaternion(chestQ));
+    P.head.p.copy(P.chest.p).add(tA.fromArray(RIG.head).applyQuaternion(chestQ));
     P.head.q.copy(chestQ);
 
     // arms
     for (const side of ['R', 'L']) {
-      const sx = side === 'R' ? -0.22 : 0.22;
-      const sh = P['uArm' + side].p.copy(P.chest.p).add(tA.set(sx, 0.44, 0).applyQuaternion(chestQ));
+      const sx = side === 'R' ? -RIG.shoulder[0] : RIG.shoulder[0];
+      const sh = P['uArm' + side].p.copy(P.chest.p).add(tA.set(sx, RIG.shoulder[1], RIG.shoulder[2]).applyQuaternion(chestQ));
       const handLocal = side === 'R' ? this.hand : this.handL;
       const target = this.toWorld(handLocal, new THREE.Vector3());
       const pole = new THREE.Vector3().addScaledVector(fwd, -0.6).addScaledVector(rightW, side === 'R' ? 0.7 : -0.7).add(tA.set(0, -0.6, 0));
       const elbow = P['lArm' + side].p;
       const hand = new THREE.Vector3();
-      twoBone(sh, target, UARM, LARM, pole, elbow, hand);
+      twoBone(sh, target, RIG.UARM, RIG.LARM, pole, elbow, hand);
       basisQuat(tA.subVectors(sh, elbow), fwd, P['uArm' + side].q);
       basisQuat(tA.subVectors(elbow, hand), fwd, P['lArm' + side].q);
       if (side === 'R') {
@@ -482,20 +606,20 @@ export class Enemy {
     // legs (procedural gait, feet planted by IK)
     const moveDir = speed > 0.05 ? tC.set(this.vel.x / speed, 0, this.vel.z / speed) : tC.copy(fwd);
     for (const side of ['L', 'R']) {
-      const hx = side === 'R' ? -0.1 : 0.1;
-      const hip = P['thigh' + side].p.copy(P.pelvis.p).add(tA.set(hx, -0.07, 0).applyQuaternion(pelvisQ));
+      const hx = side === 'R' ? -RIG.hip[0] : RIG.hip[0];
+      const hip = P['thigh' + side].p.copy(P.pelvis.p).add(tA.set(hx, RIG.hip[1], RIG.hip[2]).applyQuaternion(pelvisQ));
       const ph = this.phase + (side === 'R' ? Math.PI : 0);
       let foot;
       if (this.state === 'fall') {
         foot = new THREE.Vector3(hip.x, hip.y - 0.8, hip.z).addScaledVector(fwd, Math.sin(performance.now() / 120 + ph) * 0.2);
       } else {
-        foot = new THREE.Vector3(hip.x, 0.06 + Math.max(0, Math.cos(ph)) * lift, hip.z)
+        foot = new THREE.Vector3(hip.x, RIG.ankleY + Math.max(0, Math.cos(ph)) * lift, hip.z)
           .addScaledVector(moveDir, Math.sin(ph) * amp).addScaledVector(rightW, side === 'R' ? 0.03 : -0.03);
       }
       const pole = new THREE.Vector3().copy(fwd).add(tA.set(0, 0.2, 0));
       const knee = P['shin' + side].p;
       const ankle = new THREE.Vector3();
-      twoBone(hip, foot, THIGH, SHIN, pole, knee, ankle);
+      twoBone(hip, foot, RIG.THIGH, RIG.SHIN, pole, knee, ankle);
       basisQuat(tA.subVectors(hip, knee), fwd, P['thigh' + side].q);
       basisQuat(tA.subVectors(knee, ankle), fwd, P['shin' + side].q);
     }

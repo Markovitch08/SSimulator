@@ -17,7 +17,9 @@ canvas{display:block}
 #spawn:active{transform:translateY(2px);box-shadow:none}
 #msg{position:fixed;inset:0;display:none;place-items:center;font:700 clamp(24px,5vw,48px) system-ui;color:var(--accent);letter-spacing:.08em;pointer-events:none;text-align:center}
 #loading{position:fixed;inset:0;display:grid;place-items:center;font:600 16px system-ui}
-#help{font-size:12px;opacity:.85}
+#help{font-size:12px;opacity:.85;pointer-events:auto}
+#credits{margin-top:6px;font-size:11px;opacity:.8}
+#credits a{color:inherit}
 </style>
 <script type="importmap">
 {
@@ -37,6 +39,7 @@ canvas{display:block}
   <div class="panel" id="help">
     <b>Desktop:</b> mouse moves the sword · wheel = reach · right-drag or Q/E = turn · WASD = move<br>
     <b>VR:</b> right hand = sword · left stick = move · right stick = snap turn · A/X or touch the red button = spawn
+    <div id="credits">Enemy model: <a href="https://sketchfab.com/3d-models/ps1low-poly-human-richard-177c3ebb448c4b91b7d99bb6a6fba157" target="_blank" rel="noopener">“PS1/Low poly human - Richard”</a> by <a href="https://sketchfab.com/alanh1213" target="_blank" rel="noopener">alanh1213</a>, <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a> (split into ragdoll parts)</div>
   </div>
 </div>
 <div id="msg">SIMULATION TERMINATED</div>
