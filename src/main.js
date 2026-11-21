@@ -7,7 +7,7 @@ import { Enemy, loadEnemyModel } from './enemy.js';
 import { sfx, resumeAudio } from './audio.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '1.5';
+export const VERSION = '2.5';
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
 

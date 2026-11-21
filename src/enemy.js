@@ -187,6 +187,17 @@ const MOVES = {
     twist: [-0.5, 0.5], dmg: 14, next: 'forehand',
   },
 };
+// Extend each cut backwards with a coil point: a bigger wind-up arc that flows straight
+// into the strike instead of stopping at the start pose.
+for (const mv of Object.values(MOVES)) {
+  for (const key of ['hand', 'blade']) {
+    const pts = mv[key].points;
+    const coil = pts[0].clone().addScaledVector(pts[0].clone().sub(pts[1]), key === 'hand' ? 0.7 : 0.5);
+    if (key === 'hand') coil.y += 0.08;
+    mv[key] = new THREE.CatmullRomCurve3([coil, ...pts], false, 'centripetal');
+  }
+  mv.twist = [mv.twist[0] * 1.25, mv.twist[1] * 1.1];
+}
 // ready stances held between attacks
 const GUARDS = [
   { h: [0.25, 1.35, 0.25], b: [0.05, 0.75, 0.65] },  // middle, point up toward you
@@ -201,7 +212,7 @@ const CHAINS = {
   head: ['head'], uArmL: ['uArmL', 'lArmL'], lArmL: ['lArmL'], uArmR: ['uArmR', 'lArmR', 'sword'], lArmR: ['lArmR', 'sword'],
   thighL: ['thighL', 'shinL'], shinL: ['shinL'], thighR: ['thighR', 'shinR'], shinR: ['shinR'],
 };
-const CUT_DMG = 60;
+const CUT_DMG = 60, HEAD_CUT_DMG = 100; // decapitation needs a really clean, hard cut
 // sword mount: a steel plate under the pommel sits on a ball joint just past the wrist
 const MOUNT = 0.135, PALM = 0.04;
 // muscle strength per part
@@ -257,7 +268,7 @@ export class Enemy {
     const p = ctx.player.head;
     this.yaw = Math.atan2(p.x - pos.x, p.z - pos.z);
     this.state = 'fall'; this.stateT = 0;
-    this.hp = 380; this.dead = false;
+    this.hp = 500; this.dead = false;
     this.voice = rnd(0.82, 1.18);
     this.guard = (Math.random() * GUARDS.length) | 0; this.guardT = rnd(1, 3);
     this.pref = rnd(1.0, 1.8); this.prefT = rnd(1, 3);
@@ -429,19 +440,7 @@ export class Enemy {
         else if (dist < 0.85) want.copy(toP).normalize().multiplyScalar(-1.2);
         else want.copy(right).multiplyScalar(this.strafe * rnd(0.5, 0.9));
         if (this.atkCd <= 0 && dist < 1.75 && this.armed) this.startAttack(Math.random() < 0.65 ? 'forehand' : 'backhand');
-        if (this.state === 'approach' && this.thinkT <= 0) {
-          this.thinkT = rnd(0.12, 0.25); // reaction delay
-          // read the player's blade: predict the tip ~0.2 s ahead
-          const pred = tA.copy(P.tip).addScaledVector(P.tipVel, 0.2);
-          const chest = this.toWorld(R(0, 1.35, 0), tB);
-          const swing = new THREE.Line3(P.tip, pred).closestPointToPoint(chest, true, new THREE.Vector3());
-          if (P.tipVel.length() > 3 && swing.distanceTo(chest) < 0.9) {
-            const r = Math.random();
-            if (r < 0.4) this.setState('block', 0.4);
-            else if (r < 0.58) { this.dodge.copy(toP).normalize().multiplyScalar(-3.2); this.setState('dodge', 0.28); }
-            else if (r < 0.72) { this.dodge.copy(right).multiplyScalar((Math.random() < 0.5 ? -1 : 1) * 3); this.setState('dodge', 0.28); }
-          }
-        }
+        if (this.state === 'approach') this.reactToThreat(toP, right);
         break;
       }
       case 'dodge': {
@@ -453,31 +452,38 @@ export class Enemy {
         break;
       }
       case 'block': {
-        // move own blade onto the predicted line of the player's blade
-        const pred = tA.copy(P.tip).addScaledVector(P.tipVel, 0.15);
-        const chest = this.toWorld(R(0, 1.35, 0.1), tB);
-        const d = pred.sub(chest); const l = Math.min(0.5, d.length());
-        const handW = chest.addScaledVector(d.normalize(), l);
-        const loc = this.toLocal(handW, new THREE.Vector3());
-        handT = [-loc.x, loc.y, Math.max(0.2, loc.z)];
-        const bw = new THREE.Vector3().crossVectors(P.bladeDir, fwd);
-        if (bw.lengthSq() < 1e-3) bw.copy(UP);
-        bw.normalize(); if (bw.y < 0) bw.negate(); bw.y += 0.3;
-        const bl = bw.applyAxisAngle(UP, -this.yaw).normalize();
-        bladeT = [-bl.x, bl.y, bl.z]; handK = 30;
-        if (this.stateT >= this.stateDur) { this.setState('approach'); if (Math.random() < 0.45) this.atkCd = 0; }
+        // pick a block that matches where the player's blade is heading (right-positive local)
+        const pred = tA.copy(P.tip).addScaledVector(P.tipVel, 0.12);
+        const loc = this.toLocal(pred, new THREE.Vector3());
+        const px = -loc.x, py = loc.y;
+        const side = px >= 0 ? 1 : -1;
+        let pose;
+        if (py > 1.6) pose = { h: [0.12, 1.75, 0.32], b: [-1, 0.12, 0.15], tw: 0 };                     // overhead: blade across above the head
+        else if (py < 0.95) pose = { h: [0.22 * side, 1.05, 0.36], b: [0.25 * side, -1, 0.35], tw: 0.25 * side }; // low: point down at that side
+        else if (side > 0) pose = { h: [0.32, 1.38, 0.3], b: [0.12, 1, 0.12], tw: 0.3 };              // right: blade upright on the right
+        else pose = { h: [-0.2, 1.38, 0.38], b: [-0.12, 1, 0.12], tw: -0.35 };                        // left: blade upright across to the left
+        handT = pose.h; bladeT = pose.b; handK = 32; twist = pose.tw; leanF = -0.1;
+        // hold while the attack keeps coming, then maybe riposte
+        const near = P.tip.distanceTo(this.toWorld(R(0, 1.35, 0), tB)) < 1.1 && P.tipVel.length() > 2;
+        if (near && this.stateT < 0.9) this.stateDur = Math.max(this.stateDur, this.stateT + 0.15);
+        if (this.stateT >= this.stateDur) { this.setState('approach'); if (Math.random() < 0.5) this.atkCd = 0; }
         break;
       }
       case 'attack': {
         const mv = MOVES[this.move];
         const s = this.stateT;
         if (this.atkPhase === 'windup') {
-          // coil: bring the sword to the start of the cut, twist the torso back
+          // quick coil that keeps moving: sweep from wherever the sword is to the coil point
+          // while still walking in, then go straight into the cut with no pause
+          const u = Math.min(1, s / this.windup), e = smooth(u);
           const h0 = mv.hand.points[0], b0 = mv.blade.points[0];
-          handT = [h0.x, h0.y, h0.z]; bladeT = [b0.x, b0.y, b0.z]; handK = 9;
-          twist = mv.twist[0]; leanF = -0.05;
-          want.copy(toP).normalize().multiplyScalar(dist > 1.3 ? 0.9 : 0);
-          if (s >= this.windup) { this.atkPhase = 'strike'; this.stateT = 0; }
+          handT = [THREE.MathUtils.lerp(this.windFrom.h.x, h0.x, e), THREE.MathUtils.lerp(this.windFrom.h.y, h0.y, e), THREE.MathUtils.lerp(this.windFrom.h.z, h0.z, e)];
+          bladeT = [THREE.MathUtils.lerp(this.windFrom.b.x, b0.x, e), THREE.MathUtils.lerp(this.windFrom.b.y, b0.y, e), THREE.MathUtils.lerp(this.windFrom.b.z, b0.z, e)];
+          handK = 28; twist = mv.twist[0] * e; leanF = -0.08 * e;
+          want.copy(toP).normalize().multiplyScalar(dist > 1.1 ? 1.6 : 0.4);
+          // a fighter can abandon a wind-up to defend against an incoming cut
+          if (u < 0.7 && Math.random() < 0.5) { this.reactToThreat(toP, right); if (this.state !== 'attack') break; }
+          if (u >= 1) { this.atkPhase = 'strike'; this.stateT = 0; }
         } else if (this.atkPhase === 'strike') {
           // accelerate through the cut and decelerate in the follow-through; step into it
           const u = Math.min(1, s / this.strike), e = smooth(u);
@@ -486,15 +492,17 @@ export class Enemy {
           twist = THREE.MathUtils.lerp(mv.twist[0], mv.twist[1], e);
           leanF = 0.1 + Math.sin(u * Math.PI) * 0.3;
           want.copy(fwd).multiplyScalar(Math.sin(u * Math.PI) * 1.8); turn = 2;
-          if (!this.hitDone && u > 0.15 && u < 0.85) this.checkPlayerHit();
+          if (!this.hitDone && u > 0.2 && u < 0.88) this.checkPlayerHit();
           if (u >= 1) {
             if (this.combo > 0 && dist < 2.0 && this.armed) {
               // flow straight into the opposite cut: it starts where this one ended
               this.combo--; this.move = mv.next; this.hitDone = false;
-              this.atkPhase = 'windup'; this.stateT = 0; this.windup = rnd(0.08, 0.2); this.strike = rnd(0.42, 0.55);
+              this.atkPhase = 'windup'; this.stateT = 0; this.windup = rnd(0.1, 0.18); this.strike = rnd(0.5, 0.62); this.snapWindFrom();
             } else { this.atkPhase = 'recover'; this.stateT = 0; }
           }
         } else {
+          this.reactToThreat(toP, right);
+          if (this.state !== 'attack') break;
           const he = mv.hand.points[mv.hand.points.length - 1], be = mv.blade.points[mv.blade.points.length - 1];
           handT = [he.x, he.y, he.z]; bladeT = [be.x, be.y, be.z]; handK = 5; leanF = 0.15; twist = mv.twist[1] * 0.6;
           if (s >= this.recover) { this.setState('approach'); this.atkCd = rnd(0.4, 1.3); }
@@ -550,9 +558,30 @@ export class Enemy {
     this.drive(dt);
   }
 
+  // read the player's blade (predicted ~0.2 s ahead) and block or dodge if it is coming at us
+  reactToThreat(toP, right) {
+    if (this.thinkT > 0 || !this.armed) return;
+    const P = this.ctx.player;
+    this.thinkT = rnd(0.1, 0.2); // reaction delay
+    const pred = tA.copy(P.tip).addScaledVector(P.tipVel, 0.2);
+    const chest = this.toWorld(R(0, 1.35, 0), tB);
+    const swing = new THREE.Line3(P.tip, pred).closestPointToPoint(chest, true, new THREE.Vector3());
+    if (P.tipVel.length() < 2.5 || swing.distanceTo(chest) > 1.15) return;
+    const r = Math.random();
+    if (r < 0.62) this.setState('block', 0.35);
+    else if (r < 0.74) { this.dodge.copy(toP).normalize().multiplyScalar(-3.2); this.setState('dodge', 0.28); }
+    else if (r < 0.84) { this.dodge.copy(right).multiplyScalar((Math.random() < 0.5 ? -1 : 1) * 3); this.setState('dodge', 0.28); }
+  }
+
+  // remember where the sword is right now (right-positive local), so the wind-up starts from it
+  snapWindFrom() {
+    this.windFrom = { h: new THREE.Vector3(-this.hand.x, this.hand.y, this.hand.z), b: new THREE.Vector3(-this.blade.x, this.blade.y, this.blade.z) };
+  }
+
   startAttack(move) {
     this.move = move;
-    this.windup = rnd(0.3, 0.55); this.strike = rnd(0.42, 0.55); this.recover = rnd(0.3, 0.5);
+    this.windup = rnd(0.18, 0.3); this.strike = rnd(0.5, 0.62); this.recover = rnd(0.3, 0.5);
+    this.snapWindFrom();
     this.combo = Math.random() < 0.55 ? (Math.random() < 0.4 ? 2 : 1) : 0;
     this.atkPhase = 'windup';
     this.hitDone = false;
@@ -724,7 +753,7 @@ export class Enemy {
     this.flash = 1;
     ctx.particles.emit('blood', hit.point, hit.dir, 6 + Math.round(hit.dmg / 4), 2.5);
     if (this.hp <= 0) { this.die(hit); return; }
-    if (hit.cut && hit.dmg >= CUT_DMG && CHAINS[hit.part] && !this.lost.has(hit.part)) {
+    if (hit.cut && hit.dmg >= (hit.part === 'head' ? HEAD_CUT_DMG : CUT_DMG) && CHAINS[hit.part] && !this.lost.has(hit.part)) {
       if (hit.part === 'head') { this.hp = 0; this.die(hit); return; } // decapitation
       this.cutLimb(hit.part, hit);
     }
