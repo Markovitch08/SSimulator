@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { RAPIER, phys, GROUPS, hullDesc, removeBody, bodyAlive } from './physics.js';
+import { RAPIER, phys, GROUPS, G, grp, hullDesc, removeBody, bodyAlive } from './physics.js';
+const GROUND_Q = grp(G.PIECE, G.GROUND);
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { sfx } from './audio.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -1096,7 +1097,7 @@ export class Enemy {
       driveAng(part.body, ps.q, 24, 26, 700 * STR[part.key] * this.type.str * T, h);
     }
     const ff = tA.copy(this.vel).add(this.knock);
-    if (this.state !== 'fall' && this.state !== 'leap') {
+    if (this.state !== 'fall' && this.state !== 'leap' && !this.unsupported) {
       driveLin(this.parts.pelvis.body, this.pose.pelvis.p, ff, 12, 7, 95 * T, h);
       driveLin(this.parts.chest.body, this.pose.chest.p, ff, 9, 6, 45 * T, h);
       if (!this.lost.has('head')) driveLin(this.parts.head.body, this.pose.head.p, ff, 9, 6, 35 * T, h);
@@ -1133,6 +1134,16 @@ export class Enemy {
       }
       return;
     }
+    if (pb.y < -2.5) {
+      // fell through a hole in the floor
+      this.hp = 0;
+      this.die({ part: 'chest', point: new THREE.Vector3(pb.x, pb.y, pb.z), dir: new THREE.Vector3(0, -1, 0), speed: 1, dmg: 0, void: true });
+      return;
+    }
+    // is there floor under us? (holes from glitches): no floor = no muscle support, we drop
+    this.unsupported = !phys.world.castRay(new RAPIER.Ray({ x: pb.x, y: pb.y, z: pb.z }, { x: 0, y: -1, z: 0 }), 2.5, true, undefined, GROUND_Q);
+    if (this.unsupported) { this.tonusTarget = Math.min(this.tonusTarget, 0.35); this.wasUnsupported = true; }
+    else if (this.wasUnsupported) { this.wasUnsupported = false; if (this.state !== 'down') this.tonusTarget = 1; }
     const dx = pb.x - this.root.x, dz = pb.z - this.root.z, d = Math.hypot(dx, dz);
     if (d > 0.2) { const f = 1 - 0.2 / d; this.root.x += dx * f; this.root.z += dz * f; }
     if (this.state === 'down' || this.state === 'getup' || this.state === 'land' || this.state === 'leap') return;

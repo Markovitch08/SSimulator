@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, hullDesc, bodyAlive } from './physics.js';
+import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, hullDesc, bodyAlive, floorHole, closeAllHoles } from './physics.js';
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { Particles, Pieces } from './fx.js';
 import { Enemy, loadEnemyModel, loadStaticModel, TYPES } from './enemy.js';
@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, setListener, playAlertAt } from './audio.j
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '2.2';
+export const VERSION = '2.3';
 loadAlert('sounds/alert.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
@@ -417,6 +417,7 @@ function waveRoster(n) {
   return list;
 }
 function startRun() {
+  endGlitch(); closeAllHoles(); glitch.next = 20;
   Object.assign(run, { wave: 0, phase: 'intro', t: 5, queue: [], score: 0, streak: 0, streakT: 0 });
   board('SIMULATION ONLINE', 'first wave incoming');
   drawWrist();
@@ -446,6 +447,85 @@ function updateRun(dt) {
     sfx.fanfare(); saveBest(); drawWrist();
   }
 }
+// ---------------------------------------------------------------- simulation glitches
+// From wave 2, every 18-32 s the simulation misbehaves for 7 s.
+const glitch = { active: null, t: 0, next: 20, holes: [], last: null };
+const GLITCHES = {
+  'LOW GRAVITY': {
+    start() { world.gravity = { x: 0, y: -2.2, z: 0 }; },
+    end() { world.gravity = { x: 0, y: -9.81, z: 0 }; },
+  },
+  'FLOOR COLLAPSE': {
+    start() {
+      glitch.holes = [];
+      for (let i = 0; i < 3; i++) {
+        let x, z, tries = 0;
+        do {
+          const a = Math.random() * Math.PI * 2, r = 2 + Math.random() * 5;
+          x = player.head.x + Math.cos(a) * r; z = player.head.z + Math.sin(a) * r;
+        } while (Math.hypot(x - player.head.x, z - player.head.z) < 1.6 + 1.3 && ++tries < 20);
+        const rad = 1 + Math.random() * 0.5;
+        floorHole(x, z, rad, true);
+        const disc = new THREE.Mesh(new THREE.CircleGeometry(rad, 6).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x05060a }));
+        disc.position.set(x, 0.012, z);
+        const rim = new THREE.Mesh(new THREE.RingGeometry(rad, rad + 0.08, 6).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x3a8dde }));
+        rim.position.set(x, 0.014, z);
+        scene.add(disc, rim);
+        glitch.holes.push({ x, z, rad, disc, rim });
+      }
+    },
+    end() {
+      for (const h of glitch.holes) { floorHole(h.x, h.z, h.rad, false); scene.remove(h.disc, h.rim); }
+      glitch.holes = [];
+    },
+  },
+  'TELEPORT SCRAMBLE': {
+    start() {
+      for (const e of enemies) {
+        if (e.dead || e.state === 'fall') continue;
+        const a = Math.random() * Math.PI * 2, r = 2.5 + Math.random() * 3.5;
+        const nx = player.head.x + Math.cos(a) * r, nz = player.head.z + Math.sin(a) * r;
+        const dx = nx - e.root.x, dz = nz - e.root.z;
+        particles.emit('spark', e.root.clone().setY(1.2), null, 20, 3);
+        e.root.x += dx; e.root.z += dz;
+        const bodies = [...Object.entries(e.parts).filter(([k]) => !e.lost.has(k)).map(([, p]) => p.body)];
+        if (e.armed) bodies.push(e.swordBody);
+        if (e.sword2 && e.armed2) bodies.push(e.sword2Body);
+        for (const b of bodies) { const t = b.translation(); b.setTranslation({ x: t.x + dx, y: t.y, z: t.z + dz }, true); }
+        particles.emit('spark', e.root.clone().setY(1.2), null, 20, 3);
+      }
+    },
+    end() {},
+  },
+};
+const BG_COLOR = new THREE.Color(BG), GLITCH_COLOR = new THREE.Color(0x9fc4e8);
+function updateGlitch(dt) {
+  if (glitch.active) {
+    glitch.t -= dt;
+    // flicker the void while it lasts
+    const k = Math.random() < 0.15 ? 1 : 0.35 + 0.25 * Math.sin(performance.now() / 60);
+    scene.background.copy(BG_COLOR).lerp(GLITCH_COLOR, k); scene.fog.color.copy(scene.background);
+    if (glitch.t <= 0) endGlitch();
+    return;
+  }
+  if (run.phase !== 'active' || run.wave < 2 || player.dead) return;
+  glitch.next -= dt;
+  if (glitch.next > 0) return;
+  const names = Object.keys(GLITCHES).filter(n => n !== glitch.last);
+  const name = names[(Math.random() * names.length) | 0];
+  glitch.active = name; glitch.last = name; glitch.t = 7;
+  GLITCHES[name].start();
+  board('GLITCH', name, '#3a8dde');
+  sfx.glitch();
+}
+function endGlitch() {
+  if (!glitch.active) return;
+  GLITCHES[glitch.active].end();
+  glitch.active = null; glitch.next = 18 + Math.random() * 14;
+  scene.background.copy(BG_COLOR); scene.fog.color.copy(BG_COLOR);
+  sfx.glitch();
+}
+
 function heal(n) {
   if (player.dead) return;
   player.hp = Math.min(100, player.hp + n);
@@ -891,6 +971,7 @@ renderer.setAnimationLoop(() => {
   updateButton(dt);
   updateRun(dt);
   updateBoards(dt);
+  updateGlitch(dt);
   for (const d of decor) { d.rotation.x += d.userData.spin.x * dt; d.rotation.y += d.userData.spin.y * dt; }
   flashMat.opacity = Math.max(0, flashMat.opacity - dt * 1.5);
   sun.position.set(player.head.x + 4, 9, player.head.z + 3); sun.target.position.set(player.head.x, 0, player.head.z);
@@ -901,4 +982,4 @@ renderer.setAnimationLoop(() => {
 });
 
 // test / debug hook
-window.game = { run, popups, left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };
+window.game = { glitch, GLITCHES, run, popups, left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };

@@ -114,5 +114,7 @@ export const sfx = {
   chime(mult = 1) { if (!ok()) return; const t = ctx.currentTime; const base = 520 * Math.pow(1.12, mult - 1); [0, 0.06, 0.12].forEach((d, i) => tone(t + d, base * [1, 1.26, 1.5][i], base * [1, 1.26, 1.5][i], 0.18, 0.16, 'triangle')); },
   fanfare() { if (!ok()) return; const t = ctx.currentTime; [0, 0.12, 0.24, 0.4].forEach((d, i) => tone(t + d, [392, 494, 587, 784][i], [392, 494, 587, 784][i], 0.35, 0.2, 'square')); },
   heal() { if (!ok()) return; const t = ctx.currentTime; tone(t, 660, 1320, 0.25, 0.12, 'sine'); },
+  // digital stutter for simulation glitches
+  glitch() { if (!ok()) return; const t = ctx.currentTime; for (let i = 0; i < 9; i++) { const f = 120 + Math.random() * 1600; tone(t + i * 0.045, f, f * (0.5 + Math.random()), 0.05, 0.12, 'square'); } noise(t, 0.4, 3000, 0.5, 0.15, 'bandpass'); },
   beep() { if (!ok()) return; const t = ctx.currentTime; tone(t, 660, 990, 0.12, 0.25, 'triangle'); },
 };
