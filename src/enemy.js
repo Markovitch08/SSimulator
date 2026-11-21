@@ -3,6 +3,7 @@ import { RAPIER, phys, GROUPS, hullDesc, removeBody } from './physics.js';
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { sfx } from './audio.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { settings } from './settings.js';
 
 // ---------------------------------------------------------------------------
@@ -60,7 +61,14 @@ export const MODELS = {};
 // Cut a skinned humanoid (glTF) into the 11 rigid ragdoll parts by dominant bone weight,
 // re-expressed in each part's local frame (origin at the proximal joint, limb along -Y,
 // +Z forward), and measure the rig from its bones.
-export async function loadEnemyModel(name, url, targetHeight = 1.85) {
+// opts.bones overrides the landmark bone patterns (lower-case names); opts.chestRe picks the
+// bones that count as chest when the default naming doesn't fit (e.g. Mixamo Spine1/Spine2).
+export async function loadEnemyModel(name, url, targetHeight = 1.85, opts = {}) {
+  const B = {
+    pelvis: /spine1|^hips?|pelvis/, chest: /spine2|chest/, neck: /neck/, ankle: /^foot|ankle/,
+    sh: /shoulder|upperarm/, el: /foearm|forearm|lowerarm/, ha: /^hand/, hip: /thigh|upleg/, kn: /calf|shin|lowerleg/, an: /^foot/,
+    ...(opts.bones || {}),
+  };
   const gltf = await new GLTFLoader().loadAsync(url);
   gltf.scene.updateMatrixWorld(true);
   let mesh = null;
@@ -81,19 +89,19 @@ export async function loadEnemyModel(name, url, targetHeight = 1.85) {
   const kindOf = name => {
     const n = name.toLowerCase();
     if (/rodik|pole|target|end$/.test(n)) return null;
-    if (/spine2|chest|upperchest/.test(n)) return 'chest';
-    if (/spine|hip|pelvis|root/.test(n)) return 'pelvis';
-    if (/neck|head/.test(n)) return 'head';
-    if (/upperarm|shoulder|clavicle/.test(n)) return 'uArm';
-    if (/forearm|foearm|lowerarm|hand|wrist|manik|finger/.test(n)) return 'lArm';
+    if (/forearm|foearm|lowerarm|hand|wrist|manik|finger|thumb|index|middle|ring|pinky/.test(n)) return 'lArm';
+    if (/upperarm|shoulder|clavicle|(left|right)arm/.test(n)) return 'uArm';
     if (/thigh|upleg|upperleg/.test(n)) return 'thigh';
-    if (/calf|shin|lowerleg|knee|foot|toe|ankle|pieik/.test(n)) return 'shin';
+    if (/calf|shin|lowerleg|knee|foot|toe|ankle|pieik|(left|right)leg/.test(n)) return 'shin';
+    if (/neck|head/.test(n)) return 'head';
+    if ((opts.chestRe || /spine2|chest|upperchest/).test(n)) return 'chest';
+    if (/spine|hip|pelvis|root/.test(n)) return 'pelvis';
     return null;
   };
   const find = (re, sign) => bones.findIndex((b, i) => re.test(b.name.toLowerCase()) && (sign === 0 || Math.sign(bp[i].x) === sign));
   const need = (re, sign) => { const i = find(re, sign); if (i < 0) throw new Error('model missing bone ' + re); return bp[i].clone(); };
   // face +Z: toes should be in front of the ankles
-  const ankleR = need(/^foot|ankle/, 0);
+  const ankleR = need(B.ankle, 0);
   const toeVerts = verts.filter(v => v.y < ankleR.y + 0.05 && Math.abs(v.x - ankleR.x) < 0.15);
   const toeZ = toeVerts.reduce((a, v) => a + v.z - ankleR.z, 0);
   if (toeZ < 0) { verts.forEach(v => { v.x = -v.x; v.z = -v.z; }); bp.forEach(v => { v.x = -v.x; v.z = -v.z; }); }
@@ -105,12 +113,12 @@ export async function loadEnemyModel(name, url, targetHeight = 1.85) {
     return (k === 'pelvis' || k === 'chest' || k === 'head') ? k : k + sideOf(i);
   });
 
-  const P0 = need(/spine1|^hips?|pelvis/, 0), C0 = need(/spine2|chest/, 0), H0 = need(/neck/, 0);
+  const P0 = need(B.pelvis, 0), C0 = need(B.chest, 0), H0 = need(B.neck, 0);
   const J = {};
   for (const [side, sg] of [['L', 1], ['R', -1]]) {
-    J['sh' + side] = need(/shoulder|upperarm/, sg); J['el' + side] = need(/foearm|forearm|lowerarm/, sg);
-    J['ha' + side] = need(/^hand/, sg); J['hip' + side] = need(/thigh|upleg/, sg);
-    J['kn' + side] = need(/calf|shin|lowerleg/, sg); J['an' + side] = need(/^foot/, sg);
+    J['sh' + side] = need(B.sh, sg); J['el' + side] = need(B.el, sg);
+    J['ha' + side] = need(B.ha, sg); J['hip' + side] = need(B.hip, sg);
+    J['kn' + side] = need(B.kn, sg); J['an' + side] = need(B.an, sg);
   }
   const fwd = new THREE.Vector3(0, 0, 1);
   const frames = { pelvis: [P0, new THREE.Quaternion()], chest: [C0, new THREE.Quaternion()], head: [H0, new THREE.Quaternion()] };
@@ -338,6 +346,13 @@ const CHAINS = {
 export const TYPES = {
   richard: { model: 'richard', hp: 500, cutMul: 1, bleedMul: 1, kdDmg: 75, kdChance: 0.25, str: 1, dual: false, weight: 0.65 },
   andrew: { model: 'andrew', hp: 850, cutMul: 1.6, bleedMul: 0.55, kdDmg: 120, kdChance: 0.12, str: 1.35, dual: true, weight: 0.35 },
+  // Armoured duelist: one sword, very quick to read and block attacks on his unarmoured
+  // spots, but never bothers defending where his armour is (even once it's broken off).
+  prisoner: {
+    model: 'prisoner', hp: 1250, cutMul: 1.4, bleedMul: 0.5, kdDmg: 130, kdChance: 0.08, str: 1.45, dual: false, weight: 0.13,
+    walk: 1.3, stride: 1.1, duelist: true,
+    armor: { chest: { hp: 280, segs: 8 }, pelvis: { hp: 170, segs: 6 }, uArmL: { hp: 110, segs: 4 }, uArmR: { hp: 110, segs: 4 }, thighL: { hp: 140, segs: 4 }, thighR: { hp: 140, segs: 4 } },
+  },
 };
 const CUT_DMG = 60, HEAD_CUT_DMG = 100; // decapitation needs a really clean, hard cut
 // sword mount: a steel plate under the pommel sits on a ball joint just past the wrist
@@ -502,6 +517,7 @@ export class Enemy {
       this.joints.sword2.setContactsEnabled(false);
     }
     this.tonus = 1; this.tonusTarget = 1;
+    this.buildArmor();
     this.syncMeshes();
 
     // landing marker
@@ -592,7 +608,7 @@ export class Enemy {
         if (this.guardT <= 0) { this.guard = (Math.random() * GUARDS.length) | 0; this.guardT = rnd(1.2, 3.5); }
         this.prefT -= adt;
         if (this.prefT <= 0) { this.pref = rnd(1.0, 2.1); this.prefT = rnd(1.5, 3.5); if (Math.random() < 0.35) this.strafe *= -1; }
-        const speed = 1.8;
+        const speed = this.type.walk || 1.8;
         if (!this.canFight) {
           // disarmed: close to pouncing range, then crouch and leap
           want.copy(toP).normalize().multiplyScalar(dist > 2.6 ? speed : dist < 1.4 ? -1 : 0);
@@ -703,11 +719,11 @@ export class Enemy {
         else if (py < 0.95) pose = { h: [0.22 * side, 1.05, 0.36], b: [0.25 * side, -1, 0.35], tw: 0.25 * side }; // low: point down at that side
         else if (side > 0) pose = { h: [0.32, 1.38, 0.3], b: [0.12, 1, 0.12], tw: 0.3 };              // right: blade upright on the right
         else pose = { h: [-0.2, 1.38, 0.38], b: [-0.12, 1, 0.12], tw: -0.35 };                        // left: blade upright across to the left
-        handT = pose.h; bladeT = pose.b; handK = 32; twist = pose.tw; leanF = -0.1;
+        handT = pose.h; bladeT = pose.b; handK = this.type.duelist ? 48 : 32; twist = pose.tw; leanF = -0.1;
         // hold while the attack keeps coming, then maybe riposte
         const near = P.tip.distanceTo(this.toWorld(R(0, 1.35, 0), tB)) < 1.1 && P.tipVel.length() > 2;
         if (near && this.stateT < 0.9) this.stateDur = Math.max(this.stateDur, this.stateT + 0.15);
-        if (this.stateT >= this.stateDur) { this.setState('approach'); if (Math.random() < 0.5) this.atkCd = 0; }
+        if (this.stateT >= this.stateDur) { this.setState('approach'); if (Math.random() < (this.type.duelist ? 0.8 : 0.5)) this.atkCd = 0; }
         break;
       }
       case 'attack': {
@@ -723,7 +739,7 @@ export class Enemy {
           handK = 28; twist = mv.twist[0] * e; leanF = -0.08 * e;
           want.copy(toP).normalize().multiplyScalar(dist > 1.1 ? 1.6 : 0.4);
           // a fighter can abandon a wind-up to defend against an incoming cut
-          if (u < 0.7 && Math.random() < 0.5) { this.reactToThreat(toP, right); if (this.state !== 'attack') break; }
+          if (u < 0.7 && Math.random() < (this.type.duelist ? 0.9 : 0.5)) { this.reactToThreat(toP, right); if (this.state !== 'attack') break; }
           if (u >= 1) { this.atkPhase = 'strike'; this.stateT = 0; }
         } else if (this.atkPhase === 'strike') {
           // accelerate through the cut and decelerate in the follow-through; step into it
@@ -823,11 +839,32 @@ export class Enemy {
   reactToThreat(toP, right) {
     if (this.thinkT > 0 || !this.armed) return;
     const P = this.ctx.player;
-    this.thinkT = rnd(0.1, 0.2); // reaction delay
+    const duel = this.type.duelist;
+    this.thinkT = duel ? rnd(0.035, 0.08) : rnd(0.1, 0.2); // reaction delay
     const pred = tA.copy(P.tip).addScaledVector(P.tipVel, 0.2);
     const chest = this.toWorld(R(0, 1.35, 0), tB);
     const swing = new THREE.Line3(P.tip, pred).closestPointToPoint(chest, true, new THREE.Vector3());
     if (P.tipVel.length() < 2.5 || swing.distanceTo(chest) > 1.15) return;
+    if (duel) {
+      // where is that blade going to land? armoured regions are ignored; everything else is guarded
+      let near = null, nd = Infinity;
+      for (const part of Object.values(this.parts)) {
+        if (this.lost.has(part.key)) continue;
+        if (!part.center) { // middle of the part's own geometry, in its local frame
+          const bb = new THREE.Box3();
+          part.mesh.children.forEach(m => { if (m.isMesh && !m.material.metalness) { m.geometry.computeBoundingBox(); bb.union(m.geometry.boundingBox); } });
+          part.center = bb.isEmpty() ? new THREE.Vector3() : bb.getCenter(new THREE.Vector3());
+        }
+        const t = part.body.translation(), r = part.body.rotation();
+        const c = tC.copy(part.center).applyQuaternion(qA.set(r.x, r.y, r.z, r.w)).add(tB.set(t.x, t.y, t.z));
+        const d = swing.distanceTo(c);
+        if (d < nd) { nd = d; near = part.key; }
+      }
+      if (this.type.armor[near]) return;
+      if (Math.random() < 0.93) this.setState('block', 0.3);
+      else { this.dodge.copy(toP).normalize().multiplyScalar(-3.2); this.setState('dodge', 0.25); }
+      return;
+    }
     const r = Math.random();
     if (r < 0.62) this.setState('block', 0.35);
     else if (r < 0.74) { this.dodge.copy(toP).normalize().multiplyScalar(-3.2); this.setState('dodge', 0.28); }
@@ -958,9 +995,10 @@ export class Enemy {
   startAttack(move) {
     this.move = move;
     this.pickSide();
-    this.windup = rnd(0.18, 0.3); this.strike = rnd(0.5, 0.62); this.recover = rnd(0.3, 0.5);
+    const d = this.type.duelist;
+    this.windup = d ? rnd(0.13, 0.22) : rnd(0.18, 0.3); this.strike = rnd(0.5, 0.62); this.recover = d ? rnd(0.2, 0.35) : rnd(0.3, 0.5);
     this.snapWindFrom();
-    this.combo = Math.random() < 0.55 ? (Math.random() < 0.4 ? 2 : 1) : 0;
+    this.combo = Math.random() < (d ? 0.7 : 0.55) ? (Math.random() < 0.4 ? 2 : 1) : 0;
     this.atkPhase = 'windup';
     this.hitDone = false;
     this.setState('attack');
@@ -972,8 +1010,9 @@ export class Enemy {
     const rightW = new THREE.Vector3(-1, 0, 0).applyQuaternion(yq);
     const speed = Math.hypot(this.vel.x, this.vel.z);
     // long, unhurried strides: one step per ~0.75 m
-    this.phase += speed * adt / 0.75 * Math.PI;
-    const amp = Math.min(0.36, speed * 0.26), lift = Math.min(0.16, speed * 0.1);
+    this.phase += speed * adt / (this.type.stride || 0.75) * Math.PI;
+    const big = (this.type.stride || 0.75) / 0.75;
+    const amp = Math.min(0.36 * big, speed * 0.26 * big), lift = Math.min(0.16 * big, speed * 0.1 * big);
     const bob = Math.abs(Math.cos(this.phase)) * amp * 0.12;
 
     const leanAng = this.lean.length();
@@ -1142,8 +1181,94 @@ export class Enemy {
     if (best < 0) { this.hitDone = true; this.ctx.damagePlayer(MOVES[this.move].dmg, this); }
   }
 
+  // Steel plates wrapped around the armoured parts. Each part's plates share one collider that
+  // encloses the part, so blades hit armour first; plates break off as it takes damage.
+  buildArmor() {
+    const A = this.type.armor;
+    if (!A) return;
+    this.armor = {};
+    const steel = new THREE.MeshStandardMaterial({ color: 0x7d858e, metalness: 0.75, roughness: 0.4, flatShading: true });
+    const steel2 = steel.clone(); steel2.color.setHex(0x646b73);
+    for (const [key, cfg] of Object.entries(A)) {
+      const part = this.parts[key];
+      // fit to the bulk of the part (percentiles), not stray triangles at its edges
+      const vs = [];
+      part.mesh.children.forEach(m => { if (m.isMesh && m.geometry.attributes.position) { const pa = m.geometry.attributes.position; for (let i = 0; i < pa.count; i++) vs.push(new THREE.Vector3().fromBufferAttribute(pa, i)); } });
+      const ys = vs.map(v => v.y).sort((a, b) => a - b), q = (arr, f) => arr[Math.min(arr.length - 1, Math.floor(arr.length * f))];
+      const minY = q(ys, 0.03), maxY = q(ys, 0.97), h = maxY - minY;
+      const c = new THREE.Vector3(q(vs.map(v => v.x).sort((a, b) => a - b), 0.5), 0, q(vs.map(v => v.z).sort((a, b) => a - b), 0.5));
+      const rx = q(vs.map(v => Math.abs(v.x - c.x)).sort((a, b) => a - b), 0.96) * 1.1 + 0.02;
+      const rz = q(vs.map(v => Math.abs(v.z - c.z)).sort((a, b) => a - b), 0.96) * 1.1 + 0.02;
+      const span = { chest: [0.08, 0.78], pelvis: [0.45, 1.0] }[key] || [0.15, 0.92]; // breastplate / short fauld skirt / sleeves
+      const y0 = minY + h * span[0], y1 = minY + h * span[1];
+      const segs = [], outer = [];
+      for (let k = 0; k < cfg.segs; k++) {
+        const pts = [];
+        for (const a of [k / cfg.segs * Math.PI * 2, (k + 1) / cfg.segs * Math.PI * 2]) for (const r of [1, 0.84]) for (const y of [y0, y1]) {
+          const v = new THREE.Vector3(c.x + Math.cos(a) * rx * r, y, c.z + Math.sin(a) * rz * r);
+          pts.push(v); if (r === 1) outer.push(v);
+        }
+        const mesh = new THREE.Mesh(new ConvexGeometry(pts), k % 2 ? steel : steel2);
+        mesh.castShadow = true;
+        part.mesh.add(mesh);
+        segs.push(mesh);
+      }
+      const arr = new Float32Array(outer.length * 3); outer.forEach((v, i) => v.toArray(arr, i * 3));
+      const col = phys.world.createCollider(RAPIER.ColliderDesc.convexHull(arr).setDensity(150).setFriction(0.3).setCollisionGroups(GROUPS.ealive), part.body);
+      phys.info.set(col.handle, { kind: 'enemy', enemy: this, part: key });
+      this.armor[key] = { hp: cfg.hp, max: cfg.hp, total: cfg.segs, segs, col };
+    }
+  }
+
+  // a blow landing on intact armour: the plate takes it, the man inside barely does
+  armorHit(key, hit) {
+    const ar = this.armor[key], ctx = this.ctx;
+    ar.hp -= hit.dmg;
+    this.hp -= hit.dmg * 0.12;
+    this.flash = 0.45; this.tonus *= 0.88;
+    sfx.clang(Math.min(1, 0.4 + hit.dmg / 90));
+    ctx.particles.emit('spark', hit.point, hit.dir, 10 + Math.round(hit.dmg / 8), 2.5);
+    const body = this.parts[key].body;
+    const imp = body.mass() * Math.min(hit.speed, 10) * 0.2;
+    body.applyImpulseAtPoint({ x: hit.dir.x * imp, y: hit.dir.y * imp * 0.4, z: hit.dir.z * imp }, hit.point, true);
+    // break off plates, nearest to the blow first
+    const keep = Math.max(0, Math.ceil(ar.total * ar.hp / ar.max));
+    while (ar.segs.length > keep) {
+      let best = 0, bd = Infinity;
+      ar.segs.forEach((m, i) => {
+        m.geometry.computeBoundingSphere();
+        const d = m.localToWorld(m.geometry.boundingSphere.center.clone()).distanceTo(hit.point);
+        if (d < bd) { bd = d; best = i; }
+      });
+      this.shedPlate(ar.segs.splice(best, 1)[0], body, hit);
+    }
+    if (ar.hp <= 0 && ar.col) {
+      phys.info.delete(ar.col.handle);
+      phys.world.removeCollider(ar.col, true); ar.col = null;
+      sfx.clang(1);
+    }
+    if (this.hp <= 0) { this.die(hit); return; }
+    if (this.state === 'attack' && Math.random() < 0.3) this.setState('stagger', 0.18);
+  }
+
+  // a plate comes off and becomes a loose physics piece (immobilized enemies may throw it)
+  shedPlate(mesh, partBody, hit) {
+    const ctx = this.ctx;
+    const wp = mesh.getWorldPosition(new THREE.Vector3()), wq = mesh.getWorldQuaternion(new THREE.Quaternion());
+    mesh.parent.remove(mesh);
+    mesh.position.copy(wp); mesh.quaternion.copy(wq);
+    ctx.scene.add(mesh);
+    const b = phys.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(wp.x, wp.y, wp.z).setRotation(wq).setAngularDamping(0.6));
+    phys.world.createCollider(RAPIER.ColliderDesc.convexHull(new Float32Array(mesh.geometry.attributes.position.array)).setDensity(2000).setFriction(0.6).setCollisionGroups(GROUPS.piece), b);
+    const v = partBody.linvel();
+    b.setLinvel({ x: v.x + hit.dir.x * 2.5 + rnd(-1, 1), y: v.y + rnd(1, 2.5), z: v.z + hit.dir.z * 2.5 + rnd(-1, 1) }, true);
+    b.setAngvel({ x: rnd(-10, 10), y: rnd(-10, 10), z: rnd(-10, 10) }, true);
+    ctx.pieces.add(mesh, b, 30, { loose: true, plate: true });
+  }
+
   takeHit(hit) {
     if (this.dead) return;
+    if (this.armor && this.armor[hit.part] && this.armor[hit.part].hp > 0) { this.armorHit(hit.part, hit); return; }
     const ctx = this.ctx;
     this.hp -= hit.dmg;
     this.flash = 1;
@@ -1236,6 +1361,7 @@ export class Enemy {
     this.dead = true;
     const ctx = this.ctx, w = phys.world;
     ctx.scene.remove(this.marker);
+    if (this.armor) for (const ar of Object.values(this.armor)) if (ar.col) { phys.info.delete(ar.col.handle); ar.col.setCollisionGroups(GROUPS.piece); }
     for (const part of Object.values(this.parts)) {
       if (this.lost.has(part.key)) continue;
       const body = part.body;

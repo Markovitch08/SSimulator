@@ -29,7 +29,21 @@ export function playAlertAt(pos, volume = 0.9) {
   else pan.setPosition(pos.x, pos.y, pos.z);
   const g = ctx.createGain(); g.gain.value = volume;
   src.connect(g).connect(pan).connect(master);
+  // big open-space echo: two cross-feeding, darkening delay lines
+  const wet = ctx.createGain(); wet.gain.value = 0.75;
+  const d1 = ctx.createDelay(2), d2 = ctx.createDelay(2);
+  d1.delayTime.value = 0.38; d2.delayTime.value = 0.61;
+  const f1 = ctx.createGain(), f2 = ctx.createGain(); f1.gain.value = 0.55; f2.gain.value = 0.5;
+  const lp1 = ctx.createBiquadFilter(), lp2 = ctx.createBiquadFilter();
+  lp1.type = lp2.type = 'lowpass'; lp1.frequency.value = 2600; lp2.frequency.value = 1800;
+  pan.connect(d1); pan.connect(d2);
+  d1.connect(lp1).connect(f1).connect(d2);
+  d2.connect(lp2).connect(f2).connect(d1);
+  lp1.connect(wet); lp2.connect(wet);
+  wet.connect(master);
   src.start();
+  // tear the feedback loop down once the echo has died away, or it would run forever
+  setTimeout(() => { for (const n of [src, g, pan, d1, d2, f1, f2, lp1, lp2, wet]) n.disconnect(); }, (alertBuf.duration + 6) * 1000);
 }
 
 export function resumeAudio() {

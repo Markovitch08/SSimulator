@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, setListener, playAlertAt } from './audio.j
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '1.8';
+export const VERSION = '1.9';
 loadAlert('sounds/alert.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
@@ -102,6 +102,15 @@ try { await loadEnemyModel('richard', 'models/richard.glb'); } catch (e) { conso
 try {
   await loadStaticModel('andrew', 'models/andrew.glb', { facing: -1, roles: ['feet', 'torso', 'arms', 'head', 'legs'] });
 } catch (e) { console.warn('Andrew model failed to load:', e); }
+try {
+  await loadEnemyModel('prisoner', 'models/prisoner.glb', 1.85 * 1.05, {
+    chestRe: /spine1|spine2/,
+    bones: {
+      pelvis: /hips_/, chest: /spine1_/, neck: /neck_/, ankle: /(left|right)foot_/,
+      sh: /(left|right)arm_/, el: /(left|right)forearm_/, ha: /(left|right)hand_/, hip: /(left|right)upleg_/, kn: /(left|right)leg_/, an: /(left|right)foot_/,
+    },
+  });
+} catch (e) { console.warn('Prisoner model failed to load:', e); }
 loading.remove();
 const world = phys.world;
 
