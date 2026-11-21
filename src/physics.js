@@ -7,16 +7,20 @@ export { RAPIER };
 export const FIXED = 1 / 120;
 
 // Collision groups (membership bits).
-export const G = { GROUND: 1, PSWORD: 2, EALIVE: 4, ESWORD: 8, PIECE: 16, DEBRIS: 32 };
+export const G = { GROUND: 1, PSWORD: 2, EALIVE: 4, ESWORD: 8, PIECE: 16, DEBRIS: 32, PHAND: 64 };
 export const grp = (member, filter) => (member << 16) | filter;
 
 export const GROUPS = {
   ground: grp(G.GROUND, 0xffff),
   psword: grp(G.PSWORD, G.GROUND | G.EALIVE | G.ESWORD | G.PIECE | G.DEBRIS),
-  ealive: grp(G.EALIVE, G.GROUND | G.PSWORD | G.PIECE),
-  esword: grp(G.ESWORD, G.PSWORD),
-  piece: grp(G.PIECE, G.GROUND | G.PSWORD | G.PIECE | G.EALIVE),
-  debris: grp(G.DEBRIS, G.GROUND | G.PSWORD),
+  ealive: grp(G.EALIVE, G.GROUND | G.PSWORD | G.PIECE | G.PHAND),
+  esword: grp(G.ESWORD, G.PSWORD | G.PHAND),
+  piece: grp(G.PIECE, G.GROUND | G.PSWORD | G.PIECE | G.EALIVE | G.PHAND),
+  debris: grp(G.DEBRIS, G.GROUND | G.PSWORD | G.PHAND),
+  // the fist shoves enemies and their swords but passes through loose junk, so it doesn't
+  // knock away the thing you're reaching for
+  phand: grp(G.PHAND, G.GROUND | G.EALIVE | G.ESWORD),
+  none: 0,
 };
 
 export const phys = {

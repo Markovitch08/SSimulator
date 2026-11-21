@@ -82,8 +82,10 @@ const shardGeo = facet(new THREE.TetrahedronGeometry(1, 0));
 
 export class Pieces {
   constructor(scene) { this.scene = scene; this.list = []; }
-  add(mesh, body, life = 30) {
-    this.list.push({ mesh, body, age: 0, life, base: mesh.scale.clone() });
+  // meta.loose: a free object someone could pick up and throw; meta.sword: a usable sword
+  add(mesh, body, life = 30, meta = {}) {
+    const entry = { mesh, body, age: 0, life, base: mesh.scale.clone(), ...meta };
+    this.list.push(entry);
     phys.info.set(body.collider(0).handle, { kind: 'piece' });
     while (this.list.length > MAX_PIECES) this.remove(this.list[0]);
   }
@@ -103,9 +105,29 @@ export class Pieces {
         .addScaledVector(dir, speed * (0.3 + Math.random() * 0.5));
       body.setLinvel(v, true);
       body.setAngvel({ x: (Math.random() - 0.5) * 30, y: (Math.random() - 0.5) * 30, z: (Math.random() - 0.5) * 30 }, true);
-      this.add(mesh, body, 8 + Math.random() * 4);
+      this.add(mesh, body, 8 + Math.random() * 4, { loose: true });
     }
   }
+  // a single chunk (e.g. torn-up floor) sitting at pos, for an enemy to throw
+  rubble(pos, color = 0x9aa1a9, size = 0.07) {
+    const mesh = new THREE.Mesh(shardGeo, lambert(color));
+    mesh.scale.setScalar(size); mesh.castShadow = true; mesh.position.copy(pos);
+    this.scene.add(mesh);
+    const body = phys.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(pos.x, pos.y, pos.z).setAngularDamping(0.5));
+    const pts = new Float32Array(shardGeo.attributes.position.array.length);
+    shardGeo.attributes.position.array.forEach((v, k) => { pts[k] = v * size; });
+    phys.world.createCollider(RAPIER.ColliderDesc.convexHull(pts).setDensity(1200).setFriction(0.8).setCollisionGroups(GROUPS.debris), body);
+    this.add(mesh, body, 20, { loose: true, rubble: true });
+    return this.list[this.list.length - 1];
+  }
+  // take an object out of the list without destroying it (the player picked it up)
+  detach(entry) {
+    const i = this.list.indexOf(entry);
+    if (i >= 0) this.list.splice(i, 1);
+    entry.mesh.scale.copy(entry.base);
+    return entry;
+  }
+  find(body) { return this.list.find(p => p.body === body); }
   update(dt) {
     for (const p of this.list.slice()) {
       p.age += dt;

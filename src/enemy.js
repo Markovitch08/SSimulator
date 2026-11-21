@@ -3,6 +3,7 @@ import { RAPIER, phys, GROUPS, hullDesc, removeBody } from './physics.js';
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { sfx } from './audio.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { settings } from './settings.js';
 
 // ---------------------------------------------------------------------------
 // Enemy = hidden procedural "target skeleton" (two-bone IK, no keyframed
@@ -397,7 +398,7 @@ export class Enemy {
     const p = ctx.player.head;
     this.yaw = Math.atan2(p.x - pos.x, p.z - pos.z);
     this.state = 'fall'; this.stateT = 0;
-    this.hp = this.type.hp; this.dead = false;
+    this.hp = this.type.hp * settings.enemyToughness; this.dead = false;
     this.voice = rnd(0.82, 1.18);
     this.guard = (Math.random() * GUARDS.length) | 0; this.guardT = rnd(1, 3);
     this.pref = rnd(1.0, 1.8); this.prefT = rnd(1, 3);
@@ -815,6 +816,7 @@ export class Enemy {
     this.computePose(adt);
     this.bodyState(dt);
     this.drive(dt);
+    if (this.crippled) this.updateThrow(dt);
   }
 
   // read the player's blade (predicted ~0.2 s ahead) and block or dodge if it is coming at us
@@ -837,6 +839,85 @@ export class Enemy {
     this.windFrom = this.atkSide === 'L'
       ? { h: this.handL.clone(), b: this.bladeL.clone() } // mirror of right-positive = local
       : { h: new THREE.Vector3(-this.hand.x, this.hand.y, this.hand.z), b: new THREE.Vector3(-this.blade.x, this.blade.y, this.blade.z) };
+  }
+
+  // Immobilized (lost a leg): grab whatever loose junk is in reach (a dropped sword, a severed
+  // limb, a shard) or tear up a chunk of floor, and throw it at the player.
+  updateThrow(h) {
+    const side = !this.lost.has('uArmR') && !this.lost.has('lArmR') ? 'R' : !this.lost.has('uArmL') && !this.lost.has('lArmL') ? 'L' : null;
+    if (!side) return;
+    const ctx = this.ctx, P = ctx.player;
+    const T = this.thr ||= { phase: 'idle', t: rnd(1.2, 2.5), obj: null, proj: null };
+    T.t -= h;
+    const ub = this.parts['uArm' + side].body, lb = this.parts['lArm' + side].body;
+    const st = ub.translation(), sh = new THREE.Vector3(st.x, st.y, st.z);
+    const lt = lb.translation(), lr = lb.rotation();
+    const hand = new THREE.Vector3(0, -this.rig.LARM, 0).applyQuaternion(qA.set(lr.x, lr.y, lr.z, lr.w)).add(tB.set(lt.x, lt.y, lt.z));
+    const toPl = new THREE.Vector3(P.head.x - sh.x, 0, P.head.z - sh.z).normalize();
+    const aimArm = (pt, strength = 2600) => {
+      const d = tC.copy(pt).sub(sh); if (d.lengthSq() < 1e-4) return;
+      const q = basisQuat(d.normalize().negate(), toPl, new THREE.Quaternion());
+      driveAng(ub, q, 30, 30, strength, h); driveAng(lb, q, 30, 30, strength, h);
+    };
+    const alive = e => e && ctx.pieces.list.includes(e);
+    switch (T.phase) {
+      case 'idle': {
+        if (T.t > 0) break;
+        let best = null, bd = 1.3;
+        for (const p of ctx.pieces.list) {
+          if (!p.loose || p.thrownBy) continue;
+          const t = p.body.translation(), d = sh.distanceTo(tA.set(t.x, t.y, t.z));
+          if (d < bd) { bd = d; best = p; }
+        }
+        T.obj = best || ctx.pieces.rubble(new THREE.Vector3(hand.x, 0.06, hand.z));
+        T.obj.thrownBy = this;
+        T.phase = 'reach'; T.t = 0.45;
+        break;
+      }
+      case 'reach': {
+        if (!alive(T.obj)) { T.phase = 'idle'; T.t = 0.5; break; }
+        const t = T.obj.body.translation();
+        aimArm(tA.set(t.x, t.y, t.z));
+        if (T.t <= 0) { T.phase = 'hold'; T.t = 0.4; sfx.grunt(0.4, this.voice); }
+        break;
+      }
+      case 'hold': {
+        if (!alive(T.obj)) { T.phase = 'idle'; T.t = 0.5; break; }
+        aimArm(tA.copy(sh).addScaledVector(toPl, -0.4).add(tB.set(0, 0.55, 0))); // wind back over the shoulder
+        T.obj.body.setTranslation(hand, true); T.obj.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        if (T.t <= 0) {
+          // ballistic throw at the player's chest, a little inaccurate
+          const tgt = new THREE.Vector3(P.head.x + rnd(-0.15, 0.15), P.head.y - 0.35 + rnd(-0.1, 0.15), P.head.z + rnd(-0.15, 0.15));
+          const tf = THREE.MathUtils.clamp(hand.distanceTo(tgt) / 10, 0.25, 0.6);
+          const v = tgt.sub(hand).divideScalar(tf).add(tB.set(0, 0.5 * 9.81 * tf, 0));
+          T.obj.body.setLinvel(v, true);
+          T.obj.body.setAngvel({ x: rnd(-12, 12), y: rnd(-12, 12), z: rnd(-12, 12) }, true);
+          T.proj = { body: T.obj.body, entry: T.obj, t: 0, dmg: T.obj.sword ? 12 : T.obj.limb ? 8 : 5 };
+          T.obj.thrownBy = null; T.obj = null;
+          sfx.grunt(0.8, this.voice); sfx.whoosh();
+          T.phase = 'follow'; T.t = 0.25;
+        }
+        break;
+      }
+      case 'follow': {
+        aimArm(tA.copy(sh).addScaledVector(toPl, 1).add(tB.set(0, 0.2, 0)));
+        if (T.t <= 0) { T.phase = 'idle'; T.t = rnd(2.5, 4.5); }
+        break;
+      }
+    }
+    // thrown object hits the player?
+    const pr = T.proj;
+    if (pr) {
+      pr.t += h;
+      if (!alive(pr.entry) || pr.t > 2) T.proj = null;
+      else {
+        const t = pr.body.translation(), v = pr.body.linvel();
+        const cy = THREE.MathUtils.clamp(t.y, P.head.y - 0.8, P.head.y);
+        if (Math.hypot(t.x - P.head.x, t.z - P.head.z) < 0.25 && Math.abs(t.y - cy) < 0.25 && Math.hypot(v.x, v.y, v.z) > 3) {
+          ctx.damagePlayer(pr.dmg, this); sfx.thump(0.6); T.proj = null;
+        }
+      }
+    }
   }
 
   // Only bother with the button when the player isn't right here and is busy fighting someone else.
@@ -1067,7 +1148,7 @@ export class Enemy {
     this.flash = 1;
     ctx.particles.emit('blood', hit.point, hit.dir, 6 + Math.round(hit.dmg / 4), 2.5);
     if (this.hp <= 0) { this.die(hit); return; }
-    if (hit.cut && hit.dmg >= (hit.part === 'head' ? HEAD_CUT_DMG : CUT_DMG) * this.type.cutMul && CHAINS[hit.part] && !this.lost.has(hit.part)) {
+    if (hit.cut && hit.dmg >= (hit.part === 'head' ? HEAD_CUT_DMG : CUT_DMG) * this.type.cutMul * settings.cutThreshold && CHAINS[hit.part] && !this.lost.has(hit.part)) {
       if (hit.part === 'head') { this.hp = 0; this.die(hit); return; } // decapitation
       this.cutLimb(hit.part, hit);
     }
@@ -1119,7 +1200,7 @@ export class Enemy {
       const part = this.parts[k];
       part.col.setCollisionGroups(GROUPS.piece);
       part.body.setLinearDamping(0.05); part.body.setAngularDamping(1.2);
-      ctx.pieces.add(part.mesh, part.body, 35);
+      ctx.pieces.add(part.mesh, part.body, 35, { loose: true, limb: true });
     }
     const imp = kb.mass() * Math.min(hit.speed, 10) * 0.5;
     kb.applyImpulse({ x: hit.dir.x * imp, y: imp * 0.4, z: hit.dir.z * imp }, true);
@@ -1138,7 +1219,7 @@ export class Enemy {
     this.armed2 = false;
     phys.world.removeImpulseJoint(this.joints.sword2, true);
     this.sword2Col.setCollisionGroups(GROUPS.piece);
-    this.ctx.pieces.add(this.sword2.group, this.sword2Body, 35);
+    this.ctx.pieces.add(this.sword2.group, this.sword2Body, 45, { loose: true, sword: this.sword2 });
   }
 
   dropSword() {
@@ -1147,7 +1228,7 @@ export class Enemy {
     phys.world.removeImpulseJoint(this.joints.sword, true);
     this.sword.bladeMat.emissive.setRGB(0, 0, 0);
     this.swordCol.setCollisionGroups(GROUPS.piece);
-    this.ctx.pieces.add(this.sword.group, this.swordBody, 35);
+    this.ctx.pieces.add(this.sword.group, this.swordBody, 45, { loose: true, sword: this.sword });
   }
 
   die(hit) {
