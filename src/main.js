@@ -5,10 +5,10 @@ import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { Particles, Pieces } from './fx.js';
 import { Enemy, loadEnemyModel, loadStaticModel, TYPES } from './enemy.js';
 import { sfx, resumeAudio } from './audio.js';
-import { settings, SETTINGS_META, setSetting, onSettingsChange } from './settings.js';
+import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '1.6';
+export const VERSION = '1.7';
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
 
@@ -201,75 +201,6 @@ function drawWrist() {
 }
 drawWrist();
 
-// ---------------------------------------------------------------- settings panel (VR: left Y toggles it above
-// the left hand, slide with the right hand; desktop: Settings button or P)
-const setCanvas = document.createElement('canvas'); setCanvas.width = 512; setCanvas.height = 360;
-const setTex = new THREE.CanvasTexture(setCanvas);
-const setPanel = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.17), new THREE.MeshBasicMaterial({ map: setTex, transparent: true, side: THREE.DoubleSide }));
-setPanel.visible = false;
-const ROW = { x0: 40, x1: 472, y: i => 104 + i * 68 };
-function drawSettings() {
-  const g = setCanvas.getContext('2d');
-  g.clearRect(0, 0, 512, 360);
-  g.fillStyle = 'rgba(20,24,30,.85)'; g.fillRect(0, 0, 512, 360);
-  g.fillStyle = '#fff'; g.font = 'bold 28px system-ui'; g.fillText('SETTINGS', 24, 44);
-  g.font = '18px system-ui'; g.fillStyle = '#fff9'; g.fillText('Y to close · touch a bar with your right hand', 190, 42);
-  SETTINGS_META.forEach((m, i) => {
-    const y = ROW.y(i), v = settings[m.key], f = (v - m.min) / (m.max - m.min);
-    g.fillStyle = '#fff'; g.font = '22px system-ui'; g.fillText(`${m.label}: ${v.toFixed(2)}`, ROW.x0, y - 18);
-    g.fillStyle = '#ffffff33'; g.fillRect(ROW.x0, y - 4, ROW.x1 - ROW.x0, 8);
-    g.fillStyle = '#d41f3a'; g.fillRect(ROW.x0, y - 4, (ROW.x1 - ROW.x0) * f, 8);
-    g.beginPath(); g.arc(ROW.x0 + (ROW.x1 - ROW.x0) * f, y, 13, 0, Math.PI * 2); g.fill();
-  });
-  setTex.needsUpdate = true;
-}
-drawSettings();
-// desktop panel
-const deskPanel = document.createElement('div');
-deskPanel.className = 'panel'; deskPanel.style.cssText = 'display:none;pointer-events:auto;min-width:240px';
-deskPanel.innerHTML = '<b>Settings</b>' + SETTINGS_META.map(m =>
-  `<label style="display:block;margin-top:6px">${m.label}: <span data-v="${m.key}"></span><br><input type="range" min="${m.min}" max="${m.max}" step="0.05" data-k="${m.key}" style="width:100%"></label>`).join('');
-const setBtn = document.createElement('button');
-setBtn.type = 'button'; setBtn.textContent = 'Settings (P)';
-setBtn.style.cssText = 'pointer-events:auto;margin-left:8px;font:600 14px system-ui;padding:10px 14px;border:0;border-radius:8px;background:#3a3f47;color:#fff;cursor:pointer';
-document.getElementById('spawn').after(setBtn);
-document.getElementById('hud').appendChild(deskPanel);
-const syncDesk = () => SETTINGS_META.forEach(m => {
-  deskPanel.querySelector(`[data-k="${m.key}"]`).value = settings[m.key];
-  deskPanel.querySelector(`[data-v="${m.key}"]`).textContent = settings[m.key].toFixed(2);
-});
-syncDesk();
-deskPanel.addEventListener('input', e => { const k = e.target.dataset.k; if (k) setSetting(k, parseFloat(e.target.value)); });
-const toggleDesk = () => { deskPanel.style.display = deskPanel.style.display === 'none' ? 'block' : 'none'; };
-setBtn.addEventListener('click', toggleDesk);
-addEventListener('keydown', e => { if (e.code === 'KeyP' && !e.repeat) toggleDesk(); });
-onSettingsChange(() => { drawSettings(); syncDesk(); });
-
-let yWasDown = false, lastSet = 0;
-function updateSettingsPanel() {
-  if (!renderer.xr.isPresenting) return;
-  let yDown = false;
-  for (const src of renderer.xr.getSession().inputSources) if (src.handedness === 'left' && src.gamepad) yDown = !!src.gamepad.buttons[5]?.pressed;
-  if (yDown && !yWasDown) { setPanel.visible = !setPanel.visible; pulse('left', 0.3, 30); }
-  yWasDown = yDown;
-  if (!setPanel.visible) return;
-  const rg = handGrip('right');
-  if (!rg) return;
-  const p = rg.getWorldPosition(new THREE.Vector3());
-  setPanel.worldToLocal(p);
-  if (Math.abs(p.z) > 0.05) return;
-  const cx = (p.x / 0.24 + 0.5) * 512, cy = (0.5 - p.y / 0.17) * 360;
-  SETTINGS_META.forEach((m, i) => {
-    if (Math.abs(cy - ROW.y(i)) > 28 || cx < ROW.x0 - 20 || cx > ROW.x1 + 20) return;
-    const f = THREE.MathUtils.clamp((cx - ROW.x0) / (ROW.x1 - ROW.x0), 0, 1);
-    const v = Math.round((m.min + f * (m.max - m.min)) * 20) / 20;
-    if (v !== settings[m.key]) {
-      setSetting(m.key, v);
-      if (performance.now() - lastSet > 60) { pulse('right', 0.15, 10); lastSet = performance.now(); }
-    }
-  });
-}
-
 // ---------------------------------------------------------------- controllers
 const grips = [0, 1].map(i => {
   const grip = renderer.xr.getControllerGrip(i);
@@ -285,8 +216,6 @@ function setupHand(grip) {
     grip.add(fist);
     wrist.position.set(0.0, 0.03, 0.09); wrist.rotation.set(-Math.PI / 2.4, 0, 0);
     grip.add(wrist);
-    setPanel.position.set(0, 0.13, 0.02); setPanel.rotation.set(-0.5, 0, 0);
-    grip.add(setPanel);
   }
 }
 const handGrip = h => grips.find(g => g.userData.hand === h);
@@ -391,10 +320,6 @@ function updateLocomotion(dt) {
         if (Math.abs(ax) > 0.7 && !prevButtons[key]) { snapTurn(ax > 0 ? -Math.PI / 6 : Math.PI / 6); prevButtons[key] = true; }
         if (Math.abs(ax) < 0.3) prevButtons[key] = false;
       }
-      const b = gp.buttons[4]?.pressed; // A / X
-      const k = h + 'A';
-      if (b && !prevButtons[k]) spawnEnemy();
-      prevButtons[k] = b;
     }
   } else {
     if (keys.has('KeyQ')) yaw += 2 * dt;
@@ -442,6 +367,7 @@ function spawnEnemy(forceType) {
 }
 
 const ctx = {
+  flying: new Set(), // thrown objects still in the air
   button: { pos: new THREE.Vector3(-0.75, 0.885, -0.8) },
   pressButton: e => pressSpawnButton(e),
   scene, particles, pieces, enemies, player,
@@ -461,6 +387,7 @@ const ctx = {
 };
 
 function resetGame() {
+  ctx.flying.clear();
   releaseLeft(false);
   for (const e of enemies) if (!e.dead) e.destroy();
   enemies.length = 0;
@@ -681,6 +608,36 @@ function releaseLeft(keepMomentum) {
   handCol.setCollisionGroups(GROUPS.phand);
 }
 
+// Anything an enemy has thrown that touches (or passes right by) a blade gets batted away
+// and can no longer hurt the player.
+function deflectThrown() {
+  if (!ctx.flying.size) return;
+  for (const entry of ctx.flying) {
+    const t = entry.body.translation(), pp = new THREE.Vector3(t.x, t.y, t.z);
+    for (const w of weapons) {
+      const p = new THREE.Vector3(), q = new THREE.Quaternion();
+      readPose(w.body, p, q);
+      const a = new THREE.Vector3(0, -0.12, 0).applyQuaternion(q).add(p); // from the pommel, guard included
+      const b = new THREE.Vector3(0, w.sword.tipY, 0).applyQuaternion(q).add(p);
+      const c = new THREE.Line3(a, b).closestPointToPoint(pp, true, new THREE.Vector3());
+      // forgiving: a fast swat covers more space between physics steps
+      const reach = Math.min(0.26, 0.13 + w.tipVel.length() * 0.012);
+      if (c.distanceTo(pp) > reach) continue;
+      // bat it along the blade's motion at that point, plus away from the player
+      const lv = w.body.linvel(), av = w.body.angvel(), com = w.body.worldCom();
+      const bv = new THREE.Vector3(av.x, av.y, av.z).cross(c.clone().sub(tmpV.set(com.x, com.y, com.z))).add(tmpV2.set(lv.x, lv.y, lv.z));
+      const away = pp.clone().sub(player.head).setY(0).normalize();
+      const v = bv.multiplyScalar(1.3).addScaledVector(away, 4).add(tmpV.set(0, 1.5, 0));
+      entry.body.setLinvel(v, true);
+      entry.body.setAngvel({ x: (Math.random() - 0.5) * 30, y: (Math.random() - 0.5) * 30, z: (Math.random() - 0.5) * 30 }, true);
+      entry.inFlight = false; ctx.flying.delete(entry);
+      stats.deflects = (stats.deflects || 0) + 1;
+      sfx.clang(0.7); particles.emit('spark', c, null, 12, 2.5); pulse(w.hand, 0.8, 60);
+      break;
+    }
+  }
+}
+
 function fixedStep(h) {
   simTime += h;
   pieceSoundCd -= h;
@@ -695,6 +652,7 @@ function fixedStep(h) {
   if (leftT.valid && !left.weapon) driveBody(handBody, leftT, h, 0.8, 0.6);
   for (const e of enemies) e.update(h);
   world.step();
+  deflectThrown();
   const hitThisStep = new Set();
   for (const w of weapons) processContacts(w, h, hitThisStep);
 
@@ -771,7 +729,6 @@ renderer.setAnimationLoop(() => {
   camera.getWorldPosition(player.head);
   updateTarget(dt);
   updateLeftInput();
-  updateSettingsPanel();
 
   acc += dt;
   let n = 0;
@@ -803,4 +760,4 @@ renderer.setAnimationLoop(() => {
 });
 
 // test / debug hook
-window.game = { left, weapons, leftT, settings, setSetting, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };
+window.game = { left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };

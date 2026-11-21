@@ -893,6 +893,7 @@ export class Enemy {
           T.obj.body.setLinvel(v, true);
           T.obj.body.setAngvel({ x: rnd(-12, 12), y: rnd(-12, 12), z: rnd(-12, 12) }, true);
           T.proj = { body: T.obj.body, entry: T.obj, t: 0, dmg: T.obj.sword ? 12 : T.obj.limb ? 8 : 5 };
+          T.obj.inFlight = true; ctx.flying.add(T.obj); T.obj.body.enableCcd(true);
           T.obj.thrownBy = null; T.obj = null;
           sfx.grunt(0.8, this.voice); sfx.whoosh();
           T.phase = 'follow'; T.t = 0.25;
@@ -909,12 +910,12 @@ export class Enemy {
     const pr = T.proj;
     if (pr) {
       pr.t += h;
-      if (!alive(pr.entry) || pr.t > 2) T.proj = null;
+      if (!alive(pr.entry) || pr.t > 2 || !pr.entry.inFlight) { pr.entry.inFlight = false; ctx.flying.delete(pr.entry); T.proj = null; }
       else {
         const t = pr.body.translation(), v = pr.body.linvel();
         const cy = THREE.MathUtils.clamp(t.y, P.head.y - 0.8, P.head.y);
         if (Math.hypot(t.x - P.head.x, t.z - P.head.z) < 0.25 && Math.abs(t.y - cy) < 0.25 && Math.hypot(v.x, v.y, v.z) > 3) {
-          ctx.damagePlayer(pr.dmg, this); sfx.thump(0.6); T.proj = null;
+          ctx.damagePlayer(pr.dmg, this); sfx.thump(0.6); pr.entry.inFlight = false; ctx.flying.delete(pr.entry); T.proj = null;
         }
       }
     }
