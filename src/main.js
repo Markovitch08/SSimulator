@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, loadSound, setListener, playAlertAt } from
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '2.9';
+export const VERSION = '3.0';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
