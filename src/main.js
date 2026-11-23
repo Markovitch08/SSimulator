@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, loadSound, setListener, playAlertAt } from
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '3.2';
+export const VERSION = '3.3';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
@@ -178,7 +178,7 @@ camera.add(flash);
 const player = {
   head: new THREE.Vector3(0, 1.65, 0),
   tip: new THREE.Vector3(), tipVel: new THREE.Vector3(), bladeDir: new THREE.Vector3(0, 1, 0),
-  hp: 100, kills: 0, dead: false, deadT: 0, push: new THREE.Vector3(),
+  hp: 100, kills: 0, dead: false, deadT: 0, push: new THREE.Vector3(), forward: new THREE.Vector3(0, 0, -1),
 };
 let simTime = 0;
 
@@ -1030,6 +1030,7 @@ renderer.setAnimationLoop(() => {
   if (player.push.lengthSq() > 1e-4) { dolly.position.addScaledVector(player.push, dt); player.push.multiplyScalar(Math.exp(-6 * dt)); }
   camera.updateMatrixWorld(true);
   camera.getWorldPosition(player.head);
+  camera.getWorldDirection(player.forward);
   {
     const q = camera.getWorldQuaternion(tmpQ);
     setListener(player.head, tmpV.set(0, 0, -1).applyQuaternion(q), tmpV2.set(0, 1, 0).applyQuaternion(q));

@@ -130,14 +130,25 @@ export class Tongue {
       if (!this.ready) this.startWindup(goalPt, flat, side);
       if (this.sub === 'windup') {
         this.tipTarget.copy(this.ready); k = 8;
-        if (this.subT > 0.35) { this.sub = 'strike'; this.subT = 0; this.strikeTo = goalPt.clone().addScaledVector(flat, 0.35).addScaledVector(side, rnd(-0.25, 0.25)).add(new THREE.Vector3(0, rnd(-0.15, 0.25), 0)); }
+        if (this.subT > 0.35) { this.sub = 'strike'; this.subT = 0; this.strikeTo = goalPt.clone().addScaledVector(flat, 0.35).addScaledVector(side, rnd(-0.2, 0.2)).add(new THREE.Vector3(0, rnd(0, 0.25), 0)); }
       } else if (this.sub === 'strike') {
-        const u = Math.min(1, this.subT / 0.3);
-        this.tipTarget.lerpVectors(this.ready, this.strikeTo, smooth(u)); k = 16;
-        if (u >= 1) { this.sub = 'recoil'; this.subT = 0; }
+        const u = Math.min(1, this.subT / 0.55); // a deliberate lunge, not a snap
+        this.tipTarget.lerpVectors(this.ready, this.strikeTo, Math.pow(u, 1.4)); k = 16; // accelerates into the target
+        if (this.subT >= 0.7) { this.sub = 'recoil'; this.subT = 0; } // brief hold at full reach
       } else { // recoil: come back part of the way, then set up the next strike
         this.tipTarget.lerpVectors(this.strikeTo, this.ready, 0.6); k = 10;
         if (this.subT > 0.3) this.startWindup(goalPt, flat, side);
+      }
+    }
+    // keep the tip where the player can see it: within 55 deg of their view direction
+    if (mode !== 'button' && P.forward && this.sub !== 'strike') { // (the lunge itself has to reach the body)
+      const v = this.tipTarget.clone().sub(P.head), dist = v.length();
+      if (dist > 0.05) {
+        const dir = v.divideScalar(dist), c = dir.dot(P.forward), lim = Math.cos(55 * Math.PI / 180);
+        if (c < lim) {
+          const u = dir.addScaledVector(P.forward, -c);
+          if (u.lengthSq() > 1e-6) { u.normalize(); this.tipTarget.copy(P.head).addScaledVector(P.forward, lim * dist).addScaledVector(u, Math.sin(55 * Math.PI / 180) * dist); }
+        }
       }
     }
     const maxLen = this.alive * SEG * 1.3 * this.ext;
