@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, loadSound, setListener, playAlertAt } from
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '3.3';
+export const VERSION = '3.4';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
@@ -474,7 +474,7 @@ function waveRoster(n) {
     const r = Math.random();
     if (n >= 5 && r < 0.14) list.push('prisoner');
     else if (n >= 4 && r < 0.26 && TYPES.pilot) list.push('pilot');
-    else if (n >= 3 && r < 0.38 && TYPES.parasite) list.push('parasite');
+    else if (n >= 3 && r >= 0.26 && r < 0.36 && TYPES.parasite) list.push('parasite');
     else if (n >= 3 && r < 0.55) list.push('andrew');
     else list.push('richard');
   }
@@ -758,8 +758,8 @@ function registerHit(w, e, partKey, pt, v, tipW, travel, hitThisStep) {
 // a real blow (not a touch) chips a tongue segment; each segment takes 2-3
 function tongueHit(w, info, pt, v) {
   const t = info.tongue;
-  if (v.length() < 1.2 || t.hitCd[info.idx] > simTime) return; // even light taps count
-  t.hitCd[info.idx] = simTime + 0.2;
+  if (v.length() < 0.4 || t.hitCd[info.idx] > simTime) return; // any real touch counts
+  t.hitCd[info.idx] = simTime + 0.25;
   if (t.hitSegment(info.idx, pt, v)) pulse(w.hand, 0.5, 40);
 }
 

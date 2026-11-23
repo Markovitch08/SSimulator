@@ -24,7 +24,7 @@ export class Tongue {
     this.ext = 0; this.out = false; this.t = 0; this.lid = 0;
     this.sub = 'windup'; this.subT = 0; this.side = 1;
     this.alive = N; this.gone = false; this.hurtCd = 0;
-    this.segHp = new Array(N).fill(4); // a strong blow takes 2, a light tap 1
+    this.segHp = new Array(N).fill(2); // one strong blow or two light taps
     this.hitCd = new Array(N).fill(0);
 
     this.flesh = new THREE.MeshStandardMaterial({ color: 0xc4485a, roughness: 0.45, metalness: 0.05, flatShading: true });
@@ -43,7 +43,8 @@ export class Tongue {
     // one kinematic ball per joint: the sword physically meets every part of the tongue
     this.bodies = Array.from({ length: N }, (_, i) => {
       const b = phys.world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, -50, 0));
-      const c = phys.world.createCollider(RAPIER.ColliderDesc.ball(0.065).setCollisionGroups(GROUPS.none), b);
+      // a capsule along the whole segment (resized as the tongue stretches): no gaps for the blade to slip through
+      const c = phys.world.createCollider(RAPIER.ColliderDesc.capsule(0.15, 0.075).setCollisionGroups(GROUPS.none), b);
       phys.info.set(c.handle, { kind: 'tongue', tongue: this, idx: i });
       return { b, c };
     });
@@ -168,7 +169,13 @@ export class Tongue {
     }
     const tdir = this.pts[n].clone().sub(this.pts[n - 1]).normalize();
     this.barb.position.copy(this.pts[n]); this.barb.quaternion.setFromUnitVectors(UP, tdir);
-    for (let i = 0; i < n; i++) this.bodies[i].b.setNextKinematicTranslation(this.pts[i + 1]);
+    for (let i = 0; i < n; i++) {
+      const m = this.segs[i], len = m.scale.y, bd = this.bodies[i];
+      const mid = this.pts[i].clone().lerp(this.pts[i + 1], 0.5);
+      bd.b.setNextKinematicTranslation(mid); bd.b.setNextKinematicRotation(m.quaternion);
+      const hh = Math.max(0.01, len / 2);
+      if (Math.abs((bd.hh || 0) - hh) > 0.01) { bd.c.setHalfHeight(hh); bd.hh = hh; }
+    }
     if (this.out && mode !== 'button') this.checkHit(h);
   }
 
@@ -231,7 +238,7 @@ export class Tongue {
   hitSegment(i, pt, v) {
     if (i >= this.alive || this.gone) return false;
     const ctx = this.e.ctx;
-    const strong = v.length() > 6;
+    const strong = v.length() > 5;
     this.segHp[i] -= strong ? 2 : 1;
     ctx.particles.emit('blood', pt, v.clone().normalize(), strong ? 8 : 4, 2);
     sfx.thump(strong ? 0.5 : 0.25);
