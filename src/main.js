@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, loadSound, setListener, playAlertAt } from
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '3.1';
+export const VERSION = '3.2';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
@@ -178,7 +178,7 @@ camera.add(flash);
 const player = {
   head: new THREE.Vector3(0, 1.65, 0),
   tip: new THREE.Vector3(), tipVel: new THREE.Vector3(), bladeDir: new THREE.Vector3(0, 1, 0),
-  hp: 100, kills: 0, dead: false, deadT: 0,
+  hp: 100, kills: 0, dead: false, deadT: 0, push: new THREE.Vector3(),
 };
 let simTime = 0;
 
@@ -438,6 +438,8 @@ function spawnEnemy(forceType) {
 }
 
 const ctx = {
+  // shove the player back a little (dolly), e.g. when the tongue connects
+  knockPlayer(dir) { const d = dir.clone().setY(0); if (d.lengthSq() < 1e-6) return; player.push.add(d.normalize().multiplyScalar(1.3)); },
   flying: new Set(), // thrown objects still in the air
   button: { pos: new THREE.Vector3(-0.75, 0.885, -0.8) },
   pressButton: e => pressSpawnButton(e),
@@ -756,7 +758,7 @@ function registerHit(w, e, partKey, pt, v, tipW, travel, hitThisStep) {
 // a real blow (not a touch) chips a tongue segment; each segment takes 2-3
 function tongueHit(w, info, pt, v) {
   const t = info.tongue;
-  if (v.length() < 3 || t.hitCd[info.idx] > simTime) return;
+  if (v.length() < 1.2 || t.hitCd[info.idx] > simTime) return; // even light taps count
   t.hitCd[info.idx] = simTime + 0.2;
   if (t.hitSegment(info.idx, pt, v)) pulse(w.hand, 0.5, 40);
 }
@@ -1025,6 +1027,7 @@ startRun();
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   updateLocomotion(dt);
+  if (player.push.lengthSq() > 1e-4) { dolly.position.addScaledVector(player.push, dt); player.push.multiplyScalar(Math.exp(-6 * dt)); }
   camera.updateMatrixWorld(true);
   camera.getWorldPosition(player.head);
   {

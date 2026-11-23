@@ -24,7 +24,7 @@ export class Tongue {
     this.ext = 0; this.out = false; this.t = 0; this.lid = 0;
     this.sub = 'windup'; this.subT = 0; this.side = 1;
     this.alive = N; this.gone = false; this.hurtCd = 0;
-    this.segHp = Array.from({ length: N }, () => (Math.random() < 0.5 ? 2 : 3));
+    this.segHp = new Array(N).fill(4); // a strong blow takes 2, a light tap 1
     this.hitCd = new Array(N).fill(0);
 
     this.flesh = new THREE.MeshStandardMaterial({ color: 0xc4485a, roughness: 0.45, metalness: 0.05, flatShading: true });
@@ -92,7 +92,7 @@ export class Tongue {
     this.lidGroup.add(roof);
   }
 
-  open() { if (this.gone) return; if (!this.out && this.ext < 0.02) this.fresh = true; this.out = true; }
+  open() { if (this.gone) return; if (!this.out && this.ext < 0.02) this.fresh = true; this.out = true; this.ready = null; }
   close() { this.out = false; }
   get busy() { return this.out || this.ext > 0.02; }
 
@@ -125,14 +125,19 @@ export class Tongue {
       this.tipTarget.copy(goalPt).add(new THREE.Vector3(0, 0.05, 0)); k = 6;
       if (this.tip.distanceTo(ctx.button.pos) < 0.2) { ctx.pressButton(e); e.tongueDone = true; }
     } else {
-      // nonstop whip: swing out wide to one side past the target, sweep across, repeat from there
-      if (!this.lashFrom || (this.sub === 'lash' && this.subT >= 0.55)) this.startWindup(goalPt, flat, side);
+      // nonstop whip, always in front: coil up between host and target, strike straight out
+      // through the target, snap back a little, coil again
+      if (!this.ready) this.startWindup(goalPt, flat, side);
       if (this.sub === 'windup') {
-        this.tipTarget.copy(this.lashFrom).add(new THREE.Vector3(0, 0.35, 0)); k = 8;
-        if (this.subT > 0.45) { this.sub = 'lash'; this.subT = 0; }
-      } else {
-        const u = Math.min(1, this.subT / 0.55);
-        this.tipTarget.lerpVectors(this.lashFrom, this.lashTo, smooth(u)); k = 14;
+        this.tipTarget.copy(this.ready); k = 8;
+        if (this.subT > 0.35) { this.sub = 'strike'; this.subT = 0; this.strikeTo = goalPt.clone().addScaledVector(flat, 0.35).addScaledVector(side, rnd(-0.25, 0.25)).add(new THREE.Vector3(0, rnd(-0.15, 0.25), 0)); }
+      } else if (this.sub === 'strike') {
+        const u = Math.min(1, this.subT / 0.3);
+        this.tipTarget.lerpVectors(this.ready, this.strikeTo, smooth(u)); k = 16;
+        if (u >= 1) { this.sub = 'recoil'; this.subT = 0; }
+      } else { // recoil: come back part of the way, then set up the next strike
+        this.tipTarget.lerpVectors(this.strikeTo, this.ready, 0.6); k = 10;
+        if (this.subT > 0.3) this.startWindup(goalPt, flat, side);
       }
     }
     const maxLen = this.alive * SEG * 1.3 * this.ext;
@@ -156,12 +161,11 @@ export class Tongue {
     if (this.out && mode !== 'button') this.checkHit(h);
   }
 
-  // alternate sides; the sweep runs ~0.8 m behind the target, so the tongue cuts through it
+  // the coil point sits between host and target, a bit high and varied left/right/overhead
   startWindup(goalPt, flat, side) {
-    this.side = -this.side || 1;
-    const behind = goalPt.clone().addScaledVector(flat, 0.8).add(new THREE.Vector3(0, rnd(-0.1, 0.25), 0));
-    this.lashFrom = behind.clone().addScaledVector(side, 1.2 * this.side);
-    this.lashTo = behind.clone().addScaledVector(side, -1.2 * this.side);
+    const base = this.basePoint(new THREE.Vector3());
+    const span = Math.max(0.8, Math.min(2.2, base.clone().setY(0).distanceTo(goalPt.clone().setY(0)) * 0.45));
+    this.ready = base.clone().addScaledVector(flat, span).addScaledVector(side, rnd(-0.5, 0.5)).add(new THREE.Vector3(0, rnd(0.5, 1.0), 0));
     this.sub = 'windup'; this.subT = 0;
   }
 
@@ -202,7 +206,11 @@ export class Tongue {
       for (let i = 0; i <= 5; i++) {
         const q = new THREE.Vector3().lerpVectors(top, bot, i / 5);
         if (seg.closestPointToPoint(q, true, new THREE.Vector3()).distanceTo(q) < (i === 0 ? 0.12 : 0.18) + this.segs[s].userData.r) {
-          this.hurtCd = 0.9; this.e.ctx.damagePlayer(CONTACT_DMG, this.e); sfx.hit(0.45); return;
+          this.hurtCd = 1.1; this.e.ctx.damagePlayer(CONTACT_DMG, this.e); sfx.hit(0.45);
+          const push = this.pts[s + 1].clone().sub(this.prev[s + 1]).setY(0);
+          if (push.lengthSq() < 1e-6) push.copy(q).sub(this.pts[0]).setY(0);
+          if (this.e.ctx.knockPlayer) this.e.ctx.knockPlayer(push);
+          return;
         }
       }
     }
@@ -212,9 +220,10 @@ export class Tongue {
   hitSegment(i, pt, v) {
     if (i >= this.alive || this.gone) return false;
     const ctx = this.e.ctx;
-    this.segHp[i]--;
-    ctx.particles.emit('blood', pt, v.clone().normalize(), 6, 2);
-    sfx.thump(0.4);
+    const strong = v.length() > 6;
+    this.segHp[i] -= strong ? 2 : 1;
+    ctx.particles.emit('blood', pt, v.clone().normalize(), strong ? 8 : 4, 2);
+    sfx.thump(strong ? 0.5 : 0.25);
     if (this.segHp[i] > 0) return true;
     this.sever(i, v);
     return true;
