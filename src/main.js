@@ -4,12 +4,13 @@ import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, hullDesc, bodyAlive, 
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { Particles, Pieces } from './fx.js';
 import { Enemy, loadEnemyModel, loadStaticModel, TYPES } from './enemy.js';
-import { sfx, resumeAudio, loadAlert, setListener, playAlertAt } from './audio.js';
+import { sfx, resumeAudio, loadAlert, loadSound, setListener, playAlertAt } from './audio.js';
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '2.7';
+export const VERSION = '2.8';
 loadAlert('sounds/alert.mp3');
+loadSound('tongue', 'sounds/tongue.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
 

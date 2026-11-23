@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { RAPIER, phys, GROUPS, G, grp, hullDesc, removeBody, bodyAlive } from './physics.js';
 const GROUND_Q = grp(G.PIECE, G.GROUND);
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
-import { sfx } from './audio.js';
+import { sfx, playSoundAt } from './audio.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { settings } from './settings.js';
@@ -578,9 +578,9 @@ export class Enemy {
       // close enough to its target: plant the host and let the tongue out
       const toBtn = this.state === 'seekButton';
       const tp = toBtn ? ctx.button.pos : P.head;
-      if (Math.hypot(tp.x - this.root.x, tp.z - this.root.z) < 5) {
+      if (Math.hypot(tp.x - this.root.x, tp.z - this.root.z) < 4.5) {
         this.hostTarget = toBtn ? 'button' : 'player'; this.tongueDone = false;
-        this.setState('host'); this.tongue.open(); sfx.splat(); sfx.grunt(0.9, this.voice * 0.7);
+        this.setState('host'); this.tongue.open(); playSoundAt('tongue', this.parts.head.body.translation(), 1.2);
       }
     }
 
@@ -629,6 +629,17 @@ export class Enemy {
         // close distance, hold a preferred range, back off, circle; pick an attack that fits the range
         const g = GUARDS[this.guard];
         handT = g.h; bladeT = g.b;
+        if (dist < 2.3 && this.armed) {
+          // the player's blade is in range: hold the sword across the line from it to our chest
+          const chestW = this.toWorld(R(0, 1.35, 0.1), new THREE.Vector3());
+          const toBlade = P.tip.clone().sub(chestW); const l = Math.min(0.45, toBlade.length());
+          const loc = this.toLocal(chestW.addScaledVector(toBlade.normalize(), l), new THREE.Vector3());
+          handT = [-loc.x, THREE.MathUtils.clamp(loc.y, 1.0, 1.7), Math.max(0.25, loc.z)];
+          const bw = new THREE.Vector3().crossVectors(P.bladeDir, fwd); if (bw.lengthSq() < 1e-3) bw.copy(UP);
+          bw.normalize(); if (bw.y < 0) bw.negate(); bw.y += 0.4;
+          const bl = bw.applyAxisAngle(UP, -this.yaw).normalize(); bladeT = [-bl.x, bl.y, bl.z];
+          handK = this.type.duelist ? 30 : 18;
+        }
         this.guardT -= adt;
         if (this.guardT <= 0) { this.guard = (Math.random() * GUARDS.length) | 0; this.guardT = rnd(1.2, 3.5); }
         this.prefT -= adt;
@@ -789,7 +800,7 @@ export class Enemy {
         else if (py < 0.95) pose = { h: [0.22 * side, 1.05, 0.36], b: [0.25 * side, -1, 0.35], tw: 0.25 * side }; // low: point down at that side
         else if (side > 0) pose = { h: [0.32, 1.38, 0.3], b: [0.12, 1, 0.12], tw: 0.3 };              // right: blade upright on the right
         else pose = { h: [-0.2, 1.38, 0.38], b: [-0.12, 1, 0.12], tw: -0.35 };                        // left: blade upright across to the left
-        handT = pose.h; bladeT = pose.b; handK = this.type.duelist ? 48 : 32; twist = pose.tw; leanF = -0.1;
+        handT = pose.h; bladeT = pose.b; handK = this.type.duelist ? 85 : 60; twist = pose.tw; leanF = -0.1;
         // hold while the attack keeps coming, then maybe riposte
         const near = P.tip.distanceTo(this.toWorld(R(0, 1.35, 0), tB)) < 1.1 && P.tipVel.length() > 2;
         if (near && this.stateT < 0.9) this.stateDur = Math.max(this.stateDur, this.stateT + 0.15);
@@ -921,11 +932,14 @@ export class Enemy {
     const P = this.ctx.player;
     const duel = this.type.duelist;
     const master = this.type.blockMaster;
-    this.thinkT = master ? rnd(0.02, 0.045) : duel ? rnd(0.035, 0.08) : rnd(0.1, 0.2); // reaction delay
+    this.thinkT = master ? rnd(0.015, 0.035) : duel ? rnd(0.03, 0.06) : rnd(0.06, 0.12); // reaction delay
     const pred = tA.copy(P.tip).addScaledVector(P.tipVel, 0.2);
     const chest = this.toWorld(R(0, 1.35, 0), tB);
     const swing = new THREE.Line3(P.tip, pred).closestPointToPoint(chest, true, new THREE.Vector3());
-    if (P.tipVel.length() < (master ? 2 : 2.5) || swing.distanceTo(chest) > (master ? 1.4 : 1.15)) return;
+    // fast swings: look further ahead and also count a blade that's already close
+    const spd = P.tipVel.length();
+    const near = Math.min(swing.distanceTo(chest), P.tip.distanceTo(chest));
+    if (spd < (master ? 2 : 2.5) || near > (master ? 1.5 : 1.25) + Math.min(0.4, spd * 0.02)) return;
     if (duel) {
       // where is that blade going to land? armoured regions are ignored; everything else is guarded
       let near = null, nd = Infinity;
@@ -1177,7 +1191,8 @@ export class Enemy {
       if (this.lost.has(part.key)) continue;
       // some necks stay strong even when the body goes limp (Andrew's head no longer sinks in)
       const Tp = part.key === 'head' && this.type.headFloor ? Math.max(T, this.type.headFloor) : T;
-      driveAng(part.body, ps.q, 24, 26, 700 * STR[part.key] * this.type.str * Tp, h);
+      const armBoost = (part.key === 'uArmR' || part.key === 'lArmR') && this.state === 'block' ? 2.2 : 1;
+      driveAng(part.body, ps.q, 24, armBoost > 1 ? 40 : 26, 700 * STR[part.key] * this.type.str * Tp * armBoost, h);
     }
     const ff = tA.copy(this.vel).add(this.knock);
     if (this.state !== 'fall' && this.state !== 'leap' && !this.unsupported) {
@@ -1195,8 +1210,9 @@ export class Enemy {
     // looser grip while swinging, so the blade carries momentum like a real ragdoll cut
     const swinging = this.state === 'attack' && this.atkPhase === 'strike' && this.atkSide === 'R';
     const sp = this.pose.sword;
-    driveAng(this.swordBody, sp.q, 26, 30, (swinging ? 650 : 1100) * T, h);
-    driveLin(this.swordBody, sp.p, ff, 14, 12, (swinging ? 55 : 90) * T, h);
+    const blk = this.state === 'block' ? 2.5 : 1;
+    driveAng(this.swordBody, sp.q, 26 * Math.min(blk, 1.6), 30 * Math.min(blk, 1.6), (swinging ? 650 : 1100) * T * blk, h);
+    driveLin(this.swordBody, sp.p, ff, 14 * Math.min(blk, 1.6), 12 * Math.min(blk, 1.5), (swinging ? 55 : 90) * T * blk, h);
   }
 
   // root follows the real body; detect knockdowns; landing from the drop
@@ -1528,6 +1544,10 @@ export class Enemy {
     if (this.dead || this.lost.has(hit.part) || !bodyAlive(this.parts[hit.part].body)) return;
     if (this.armor && this.armor[hit.part] && this.armor[hit.part].hp > 0) { this.armorHit(hit.part, hit); return; }
     const ctx = this.ctx;
+    if (this.state === 'block' && this.armed) {
+      hit = { ...hit, dmg: hit.dmg * (this.type.blockMaster ? 0.25 : 0.5), cut: false }; // partly turned aside
+      ctx.particles.emit('spark', hit.point, null, 6, 2); sfx.clang(0.4);
+    }
     this.hp -= hit.dmg;
     this.flash = 1;
     ctx.particles.emit('blood', hit.point, hit.dir, 6 + Math.round(hit.dmg / 4), 2.5);

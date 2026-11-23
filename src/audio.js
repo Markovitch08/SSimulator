@@ -46,6 +46,25 @@ export function playAlertAt(pos, volume = 0.9) {
   setTimeout(() => { for (const n of [src, g, pan, d1, d2, f1, f2, lp1, lp2, wet]) n.disconnect(); }, (alertBuf.duration + 6) * 1000);
 }
 
+// --- general positioned one-shots (e.g. the parasite reveal)
+const sounds = {};
+export function loadSound(name, url) {
+  fetch(url).then(r => r.arrayBuffer()).then(b => { sounds[name] = { data: b, buf: null }; decodeSounds(); }).catch(e => console.warn(name + ' sound failed to load', e));
+}
+function decodeSounds() {
+  if (!ctx) return;
+  for (const s of Object.values(sounds)) if (!s.buf && !s.decoding) { s.decoding = true; ctx.decodeAudioData(s.data.slice(0)).then(b => { s.buf = b; }).catch(() => {}); }
+}
+export function playSoundAt(name, pos, volume = 1) {
+  const s = sounds[name];
+  if (!ctx || ctx.state !== 'running' || !s || !s.buf) return;
+  const src = ctx.createBufferSource(); src.buffer = s.buf;
+  const pan = ctx.createPanner(); pan.panningModel = 'HRTF'; pan.distanceModel = 'inverse'; pan.refDistance = 3; pan.rolloffFactor = 1;
+  if (pan.positionX) { pan.positionX.value = pos.x; pan.positionY.value = pos.y; pan.positionZ.value = pos.z; } else pan.setPosition(pos.x, pos.y, pos.z);
+  const g = ctx.createGain(); g.gain.value = volume;
+  src.connect(g).connect(pan).connect(master); src.start();
+}
+
 export function resumeAudio() {
   if (!ctx) {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -55,7 +74,7 @@ export function resumeAudio() {
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   }
   if (ctx.state === 'suspended') ctx.resume();
-  decodeAlert();
+  decodeAlert(); decodeSounds();
 }
 
 function env(g, t, a, peak, dec) {

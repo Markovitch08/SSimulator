@@ -33,7 +33,8 @@ export class Tongue {
       m.userData.r = 0.055 - 0.035 * (i / N);
       scene.add(m); this.segs.push(m);
     }
-    this.barb = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.26, 4).translate(0, 0.13, 0), new THREE.MeshStandardMaterial({ color: 0xe8dcc0, roughness: 0.6, flatShading: true }));
+    // a rounded, slightly flattened tongue tip
+    this.barb = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8).scale(0.048, 0.085, 0.028).translate(0, 0.045, 0), flesh);
     this.barb.visible = false; scene.add(this.barb);
 
     // a few kinematic balls along the outer tongue, so it physically clashes with your sword
@@ -54,7 +55,7 @@ export class Tongue {
     const box = new THREE.Box3();
     for (const m of meshes) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox); }
     const size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
-    const cutY = box.min.y + size.y * 0.56;
+    const cutY = box.min.y + size.y * 0.47;
     this.hinge = new THREE.Vector3(c.x, cutY, box.min.z);
     this.mouth = new THREE.Vector3(c.x, cutY, c.z);
     this.lidGroup = new THREE.Group();
@@ -82,6 +83,10 @@ export class Tongue {
       new THREE.MeshBasicMaterial({ color: 0x4a0612 }));
     cav.position.set(c.x, cutY - 0.004, c.z);
     head.add(cav);
+    const roof = new THREE.Mesh(new THREE.CircleGeometry(Math.min(size.x, size.z) * 0.5, 10).rotateX(Math.PI / 2),
+      new THREE.MeshStandardMaterial({ color: 0x8e2333, roughness: 0.4, side: THREE.DoubleSide }));
+    roof.position.set(c.x - this.hinge.x, 0.004, c.z - this.hinge.z);
+    this.lidGroup.add(roof);
   }
 
   open() { if (!this.out && this.ext < 0.02) this.fresh = true; this.out = true; this.sub = 'guard'; this.subT = 0; this.guardT = rnd(0.3, 0.7); }
@@ -123,7 +128,7 @@ export class Tongue {
     } else {
       // parry: read the player's blade and put the tongue across it
       if (this.thinkT <= 0 && this.sub !== 'lash') {
-        this.thinkT = rnd(0.03, 0.06);
+        this.thinkT = rnd(0.05, 0.09);
         const pred = P.tip.clone().addScaledVector(P.tipVel, 0.12);
         const chest = e.parts.chest.body.translation();
         const near = Math.min(pred.distanceTo(new THREE.Vector3(chest.x, chest.y + 0.4, chest.z)), pred.distanceTo(this.pts[(N / 2) | 0]));
@@ -135,23 +140,23 @@ export class Tongue {
           if (this.subT > this.guardT) { this.sub = 'windup'; this.subT = 0; this.side = Math.random() < 0.5 ? 1 : -1; }
           break;
         case 'windup': // coil up and to one side
-          this.tipTarget.copy(base).addScaledVector(flat, 0.7).add(new THREE.Vector3(0, 1.3, 0)).addScaledVector(side, 1.0 * this.side); k = 12;
-          if (this.subT > 0.3) { this.sub = 'lash'; this.subT = 0; this.hit = false; this.lashFrom = this.tip.clone(); this.lashTo = goalPt.clone().add(new THREE.Vector3(rnd(-0.2, 0.2), rnd(-0.15, 0.35), 0)).addScaledVector(flat, 0.45); }
+          this.tipTarget.copy(base).addScaledVector(flat, 0.7).add(new THREE.Vector3(0, 1.3, 0)).addScaledVector(side, 1.0 * this.side); k = 9;
+          if (this.subT > 0.42) { this.sub = 'lash'; this.subT = 0; this.hit = false; this.lashFrom = this.tip.clone(); this.lashTo = goalPt.clone().add(new THREE.Vector3(rnd(-0.2, 0.2), rnd(-0.15, 0.35), 0)).addScaledVector(flat, 0.45); }
           break;
         case 'lash': { // whip through the target and past it
-          const u = Math.min(1, this.subT / 0.22);
-          this.tipTarget.lerpVectors(this.lashFrom, this.lashTo, smooth(u)).addScaledVector(side, -Math.sin(u * Math.PI) * 0.5 * this.side); k = 45;
+          const u = Math.min(1, this.subT / 0.32);
+          this.tipTarget.lerpVectors(this.lashFrom, this.lashTo, smooth(u)).addScaledVector(side, -Math.sin(u * Math.PI) * 0.5 * this.side); k = 28;
           if (!this.hit) this.checkHit();
           if (u >= 1) { this.sub = 'recover'; this.subT = 0; }
           break;
         }
         case 'recover':
           this.tipTarget.copy(guard); k = 7;
-          if (this.subT > 0.35) { this.sub = 'guard'; this.subT = 0; this.guardT = rnd(0.25, 0.8); }
+          if (this.subT > 0.45) { this.sub = 'guard'; this.subT = 0; this.guardT = rnd(0.4, 1.0); }
           break;
         case 'parry': { // tip and middle across the incoming blade
           const mid = P.tip.clone().addScaledVector(P.tipVel, 0.08).lerp(base, 0.15);
-          this.tipTarget.copy(mid).addScaledVector(side, 0.25); k = 34;
+          this.tipTarget.copy(mid).addScaledVector(side, 0.25); k = 24;
           if (this.subT > 0.3) { this.sub = Math.random() < 0.6 ? 'windup' : 'guard'; this.subT = 0; this.guardT = 0.2; this.side = Math.random() < 0.5 ? 1 : -1; }
           break;
         }
