@@ -360,7 +360,7 @@ export const TYPES = {
   pilot: { model: 'pilot', hp: 650, cutMul: 1.2, bleedMul: 0.8, kdDmg: 100, kdChance: 0.15, str: 1.25, dual: false, weight: 0.17, walk: 1.7, pilot: true, duelist: true, blockMaster: true },
   // Looks like Richard. Near its target the host freezes, the skull opens and a fencing tongue
   // comes out; the tongue can't be hurt, the (frozen) body can.
-  parasite: { model: 'richard', hp: 850, cutMul: 1.6, bleedMul: 0.55, kdDmg: 120, kdChance: 0.12, str: 1.35, dual: false, weight: 0.15, parasite: true },
+  parasite: { model: 'richard', hp: 680, cutMul: 1.6, bleedMul: 0.55, kdDmg: 120, kdChance: 0.12, str: 1.35, dual: false, weight: 0.15, parasite: true },
 };
 for (const [k, t] of Object.entries(TYPES)) t.name = k;
 const CUT_DMG = 60, HEAD_CUT_DMG = 120;
@@ -575,7 +575,7 @@ export class Enemy {
       }
     }
     if (this.state === 'attack' && !(this.atkSide === 'L' ? this.armed2 : this.armed)) this.setState('stagger', 0.5);
-    if (this.tongue && !['fall', 'land', 'down', 'getup', 'host', 'retract'].includes(this.state)) {
+    if (this.tongue && !this.tongue.gone && !['fall', 'land', 'down', 'getup', 'host', 'retract'].includes(this.state)) {
       // close enough to its target: plant the host and let the tongue out
       const toBtn = this.state === 'seekButton';
       const tp = toBtn ? ctx.button.pos : P.head;
@@ -768,7 +768,7 @@ export class Enemy {
         desiredYaw = Math.atan2(tp.x - this.root.x, tp.z - this.root.z);
         handT = [0.22, 1.0, 0.12]; bladeT = [0.05, -0.7, 0.7]; handK = 4; leanF = -0.05; turn = 0.8;
         const far = Math.hypot(tp.x - this.root.x, tp.z - this.root.z) > 6.5;
-        if (far || this.tongueDone) { this.tongue.close(); this.btnCd = rnd(5, 10); this.setState('retract', 0.7); }
+        if (far || this.tongueDone || this.tongue.gone) { this.tongue.close(); this.btnCd = rnd(5, 10); this.setState('retract', 0.7); }
         break;
       }
       case 'retract': {
@@ -1583,7 +1583,6 @@ export class Enemy {
   onClash(rel) {
     if (this.dead || this.clashCd > 0) return false;
     this.clashCd = 0.15;
-    if (this.tongue && this.tongue.out) { this.tongue.clashed(); return false; }
     const parried = this.state === 'attack' && ((this.atkPhase === 'strike' && this.stateT < this.strike * 0.8) || (this.atkPhase === 'windup' && this.stateT > this.windup * 0.6));
     if (parried) {
       this.sword.bladeMat.emissive.setRGB(0, 0, 0);

@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, loadSound, setListener, playAlertAt } from
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '3.0';
+export const VERSION = '3.1';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
@@ -720,7 +720,7 @@ function swingTravel(w, window = 0.2) {
   return d;
 }
 
-const SWEEP_GROUPS = grp(G.PSWORD, G.EALIVE);
+const SWEEP_GROUPS = grp(G.PSWORD, G.EALIVE | G.ESWORD);
 const SWEEP_FRACS = [0.15, 0.35, 0.55, 0.75, 0.9, 1.0];
 
 // one place that turns "blade touched enemy part at pt with blade velocity v" into a hit
@@ -753,6 +753,14 @@ function registerHit(w, e, partKey, pt, v, tipW, travel, hitThisStep) {
   if (twoHand > 1) pulse('left', 0.25 + dmg / 120, 30 + dmg);
 }
 
+// a real blow (not a touch) chips a tongue segment; each segment takes 2-3
+function tongueHit(w, info, pt, v) {
+  const t = info.tongue;
+  if (v.length() < 3 || t.hitCd[info.idx] > simTime) return;
+  t.hitCd[info.idx] = simTime + 0.2;
+  if (t.hitSegment(info.idx, pt, v)) pulse(w.hand, 0.5, 40);
+}
+
 function processContacts(w, h, hitThisStep) {
   const pre = w.pre;
   w.ax.blade.set(0, 1, 0).applyQuaternion(pre.q);
@@ -782,6 +790,8 @@ function processContacts(w, h, hitThisStep) {
         particles.emit('spark', pt, null, parried ? 14 : 6, 2.5);
         pulse(w.hand, parried ? 1 : 0.5, parried ? 90 : 40);
       }
+    } else if (info.kind === 'tongue') {
+      tongueHit(w, info, pt, v);
     } else if (info.kind === 'stitched') {
       // a hard hit knocks stitched scrap off the Stitcher
       if (v.length() > 5 && !info.enemy.dead) {
@@ -805,6 +815,7 @@ function processContacts(w, h, hitThisStep) {
     const hit = world.castRay(new RAPIER.Ray(o, d), len, true, undefined, SWEEP_GROUPS);
     if (!hit) continue;
     const info = phys.info.get(hit.collider.handle);
+    if (info?.kind === 'tongue') { tongueHit(w, info, o.clone().addScaledVector(d, hit.timeOfImpact), v); continue; }
     if (info?.kind !== 'enemy') continue;
     const pt = o.clone().addScaledVector(d, hit.timeOfImpact);
     if (!hitThisStep.has(info.enemy)) stats.rayHits++;
