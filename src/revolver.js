@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RAPIER, phys, GROUPS, G, grp } from './physics.js';
-import { gunSfx } from './audio.js';
+import { gunSfx, playSound } from './audio.js';
 
 // Six-shooter, following REVOLVER_MECHANICS.md. Gun-local axes: +Y up, -Z bore, origin = grip
 // (the point in the palm). Held: it follows the hand. Dropped: a rigid body.
@@ -340,7 +340,8 @@ export class Revolver {
     const cylW = this.cyl.getWorldPosition(new THREE.Vector3()), side = new THREE.Vector3(1, 0, 0).applyQuaternion(this.root.quaternion);
     for (const s of [-1, 1]) this.puff(cylW, side.clone().multiplyScalar(s * rnd(0.8, 1.6)).add(new THREE.Vector3(0, 0.3, 0)), { size: 0.02, grow: 0.08, life: 0.7, opacity: 0.45 });
     this.wisp = 1.6;
-    gunSfx.shot(); this.g.pulse(this.hand, 1, 90);
+    if (!playSound('gunshot', 0.9)) gunSfx.shot(); // recorded shot + echo; synth until it's decoded
+    this.g.pulse(this.hand, 1, 90);
   }
 
   // purely visual: a red mist that blooms out of the wound and the exit, plus a spray of droplets

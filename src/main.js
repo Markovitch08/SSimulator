@@ -9,9 +9,10 @@ import { settings } from './settings.js';
 import { Revolver } from './revolver.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '3.8';
+export const VERSION = '3.9';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
+loadSound('gunshot', 'sounds/gunshot.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
 

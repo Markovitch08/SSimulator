@@ -65,6 +65,19 @@ export function playSoundAt(name, pos, volume = 1) {
   src.connect(g).connect(pan).connect(master); src.start();
 }
 
+// non-spatial playback (keeps a stereo file's width): for sounds made right at the player.
+// Returns false if the file isn't decoded yet so the caller can fall back.
+export function playSound(name, volume = 1) {
+  const s = sounds[name];
+  if (!ctx || ctx.state !== 'running' || !s || !s.buf) return false;
+  const src = ctx.createBufferSource(); src.buffer = s.buf;
+  const g = ctx.createGain(); g.gain.value = volume;
+  src.connect(g).connect(master);
+  src.onended = () => { src.disconnect(); g.disconnect(); };
+  src.start();
+  return true;
+}
+
 export function resumeAudio() {
   if (!ctx) {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
