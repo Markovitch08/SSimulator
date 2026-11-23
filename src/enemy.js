@@ -363,7 +363,8 @@ export const TYPES = {
   parasite: { model: 'richard', hp: 850, cutMul: 1.6, bleedMul: 0.55, kdDmg: 120, kdChance: 0.12, str: 1.35, dual: false, weight: 0.15, parasite: true },
 };
 for (const [k, t] of Object.entries(TYPES)) t.name = k;
-const CUT_DMG = 60, HEAD_CUT_DMG = 120; // decapitation needs a really clean, hard cut
+const CUT_DMG = 60, HEAD_CUT_DMG = 120;
+const SWORD_DENSITY = 5000; // heavy enemy swords: they stop and deflect the player's blade harder // decapitation needs a really clean, hard cut
 // sword mount: a steel plate under the pommel sits on a ball joint just past the wrist
 const MOUNT = 0.135, PALM = 0.04;
 // muscle strength per part
@@ -503,12 +504,12 @@ export class Enemy {
     const sp = this.pose.sword;
     this.swordBody = w.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(sp.p.x, sp.p.y, sp.p.z).setRotation(sp.q)
       .setAngularDamping(2).setCcdEnabled(true));
-    this.swordCol = w.createCollider(hullDesc([this.sword.bladeGeo, this.sword.guardGeo, this.sword.gripGeo]).setDensity(3000).setCollisionGroups(GROUPS.esword), this.swordBody);
+    this.swordCol = w.createCollider(hullDesc([this.sword.bladeGeo, this.sword.guardGeo, this.sword.gripGeo]).setDensity(SWORD_DENSITY).setCollisionGroups(GROUPS.esword), this.swordBody);
     phys.info.set(this.swordCol.handle, { kind: 'esword', enemy: this });
     if (this.sword2) {
       const s2 = this.pose.sword2;
       this.sword2Body = w.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(s2.p.x, s2.p.y, s2.p.z).setRotation(s2.q).setAngularDamping(2).setCcdEnabled(true));
-      this.sword2Col = w.createCollider(hullDesc([this.sword2.bladeGeo, this.sword2.guardGeo, this.sword2.gripGeo]).setDensity(3000).setCollisionGroups(GROUPS.esword), this.sword2Body);
+      this.sword2Col = w.createCollider(hullDesc([this.sword2.bladeGeo, this.sword2.guardGeo, this.sword2.gripGeo]).setDensity(SWORD_DENSITY).setCollisionGroups(GROUPS.esword), this.sword2Body);
       phys.info.set(this.sword2Col.handle, { kind: 'esword', enemy: this });
       this.armed2 = true;
     }
@@ -580,7 +581,7 @@ export class Enemy {
       const tp = toBtn ? ctx.button.pos : P.head;
       if (Math.hypot(tp.x - this.root.x, tp.z - this.root.z) < 4.5) {
         this.hostTarget = toBtn ? 'button' : 'player'; this.tongueDone = false;
-        this.setState('host'); this.tongue.open(); playSoundAt('tongue', this.parts.head.body.translation(), 1.2);
+        this.setState('host'); this.tongue.open(); playSoundAt('tongue', this.parts.head.body.translation(), 0.5);
       }
     }
 
@@ -956,14 +957,17 @@ export class Enemy {
         if (d < nd) { nd = d; near = part.key; }
       }
       if (this.type.armor && this.type.armor[near]) return;
-      if (Math.random() < (master ? 0.98 : 0.93)) this.setState('block', master ? 0.4 : 0.3);
-      else { this.dodge.copy(toP).normalize().multiplyScalar(-3.2); this.setState('dodge', 0.25); }
+      if (spd > 7 && Math.random() < (master ? 0.22 : 0.3)) { this.dodge.copy(toP).normalize().multiplyScalar(-4.2); this.setState('dodge', 0.32); }
+      else if (Math.random() < (master ? 0.98 : 0.93)) this.setState('block', master ? 0.4 : 0.3);
+      else { this.dodge.copy(toP).normalize().multiplyScalar(-4); this.setState('dodge', 0.3); }
       return;
     }
     const r = Math.random();
-    if (r < 0.62) this.setState('block', 0.35);
-    else if (r < 0.74) { this.dodge.copy(toP).normalize().multiplyScalar(-3.2); this.setState('dodge', 0.28); }
-    else if (r < 0.84) { this.dodge.copy(right).multiplyScalar((Math.random() < 0.5 ? -1 : 1) * 3); this.setState('dodge', 0.28); }
+    // the faster the swing, the more likely they just step back out of its reach
+    const fast = spd > 7;
+    if (r < (fast ? 0.4 : 0.15)) { this.dodge.copy(toP).normalize().multiplyScalar(-4.2); this.setState('dodge', 0.32); }
+    else if (r < (fast ? 0.88 : 0.77)) this.setState('block', 0.35);
+    else if (r < (fast ? 0.95 : 0.87)) { this.dodge.copy(right).multiplyScalar((Math.random() < 0.5 ? -1 : 1) * 3.2); this.setState('dodge', 0.28); }
   }
 
   // remember where the sword is right now (right-positive local), so the wind-up starts from it
