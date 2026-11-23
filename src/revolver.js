@@ -12,7 +12,7 @@ const ZERO_Y = BORE_Y - drop(ZERO);
 const FRONT_Y = REAR.y + (ZERO_Y - REAR.y) * (REAR.z - FRONT_Z) / (REAR.z + ZERO);
 const BULLET_Q = grp(G.PSWORD, G.GROUND | G.EALIVE | G.ESWORD | G.PIECE | G.DEBRIS);
 const CHAINS_LIMBS = new Set(['uArmL', 'lArmL', 'uArmR', 'lArmR', 'thighL', 'shinL', 'thighR', 'shinR']);
-const DMG = 45, PUSH = 22, LIMB_SHOTS = 3; // a limb that eats LIMB_SHOTS bullets comes off
+const DMG = 55, PUSH = 24, LIMB_SHOTS = 3; // a limb that eats LIMB_SHOTS bullets comes off
 const rnd = (a, b) => a + Math.random() * (b - a);
 const TAU = Math.PI * 2;
 

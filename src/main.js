@@ -9,7 +9,7 @@ import { settings } from './settings.js';
 import { Revolver } from './revolver.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '3.7';
+export const VERSION = '3.8';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
@@ -1099,7 +1099,23 @@ function gunHolster() { // right hip, barrel down, sights facing forward
 }
 
 const leather = lambert(0x5a3a22);
-const holsterMesh = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.028, 0.022, 0.16, 6)), leather);
+// hip holster, modelled in the revolver's own frame (origin = grip, -Z = bore, +Y = sights,
+// -X = toward the body): a barrel sleeve, a pocket bulged for the cylinder, a belt loop on
+// the body side and an unsnapped thumb-break strap, grip left exposed to grab.
+const leatherDark = lambert(0x3d2614), brassMat = lambert(0xc9a24a);
+const holsterMesh = new THREE.Group();
+{
+  const part = (geo, mat, x, y, z, rx = 0) => { const m = new THREE.Mesh(facet(geo), mat); m.position.set(x, y, z); m.rotation.x = rx; holsterMesh.add(m); return m; };
+  const sleeve = new THREE.CylinderGeometry(0.02, 0.016, 0.2, 6).rotateX(Math.PI / 2); sleeve.scale(1, 1.4, 1);
+  part(sleeve, leather, 0, 0.058, -0.165);                                        // barrel sleeve, tapering to the toe
+  part(new THREE.SphereGeometry(0.016, 6, 4, 0, Math.PI * 2, 0, Math.PI / 2).rotateX(-Math.PI / 2).scale(1.05, 1.4, 0.6), leather, 0, 0.058, -0.265); // closed toe
+  part(new THREE.CylinderGeometry(0.03, 0.026, 0.085, 6).rotateX(Math.PI / 2).scale(0.95, 1.25, 1), leather, 0, 0.052, -0.04);         // pocket around frame + cylinder
+  part(new THREE.BoxGeometry(0.05, 0.008, 0.088), leatherDark, 0, 0.088, -0.04);      // stitched welt along the mouth
+  part(new THREE.BoxGeometry(0.012, 0.06, 0.15), leatherDark, -0.031, 0.045, 0.02);  // belt loop, riding up past the grip
+  part(new THREE.BoxGeometry(0.006, 0.05, 0.05), leatherDark, -0.04, 0.045, 0.095);  // loop fold over the belt
+  part(new THREE.BoxGeometry(0.004, 0.014, 0.045), leatherDark, 0.027, 0.08, 0.02, -0.3); // thumb-break strap, hanging open
+  part(new THREE.CylinderGeometry(0.006, 0.006, 0.004, 8).rotateZ(Math.PI / 2), brassMat, 0.03, 0.087, 0.036); // snap
+}
 const scabbardMesh = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.03, 0.02, 0.8, 5).translate(0, -0.48, 0)), leather);
 scene.add(holsterMesh, scabbardMesh);
 
@@ -1151,7 +1167,7 @@ function updateEquipment(dt) {
   if (swordState.state === 'dropped') { const t = swordBody.translation(); if (t.y < -2 || Math.hypot(t.x - player.head.x, t.z - player.head.z) > 60) swordState.state = 'holstered'; }
   target.valid = swordState.state === 'held' && (renderer.xr.isPresenting ? hands.right.valid : true);
   revolver.update(dt, hands);
-  const gh = gunHolster(); holsterMesh.position.copy(gh.p).add(new THREE.Vector3(0, -0.03, 0)); holsterMesh.quaternion.copy(gh.q).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)));
+  const gh = gunHolster(); holsterMesh.position.copy(gh.p); holsterMesh.quaternion.copy(gh.q);
   const sh = swordHolster(); scabbardMesh.position.copy(sh.p); scabbardMesh.quaternion.copy(sh.q).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI, 0, 0)));
   const vis = renderer.xr.isPresenting || !!window.game?.handOverride;
   holsterMesh.visible = scabbardMesh.visible = vis;
