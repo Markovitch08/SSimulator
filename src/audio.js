@@ -137,3 +137,58 @@ export const sfx = {
   glitch() { if (!ok()) return; const t = ctx.currentTime; for (let i = 0; i < 9; i++) { const f = 120 + Math.random() * 1600; tone(t + i * 0.045, f, f * (0.5 + Math.random()), 0.05, 0.12, 'square'); } noise(t, 0.4, 3000, 0.5, 0.15, 'bandpass'); },
   beep() { if (!ok()) return; const t = ctx.currentTime; tone(t, 660, 990, 0.12, 0.25, 'triangle'); },
 };
+
+// ---------------------------------------------------------------- revolver sounds
+// Gunshot: six layers into a per-shot soft-clip waveshaper (never a shared one). Mechanical
+// sounds: short noise+tone clicks with a little random pitch/gain each time. Every node here
+// belongs to one sound and is released when that sound ends.
+function nz(t, dur, type, f0, f1, q, gain, out) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const f = ctx.createBiquadFilter(); f.type = type; f.Q.value = q;
+  f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  const g = ctx.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f).connect(g).connect(out); s.start(t); s.stop(t + dur + 0.02);
+}
+function osc(t, dur, type, f0, f1, gain, out) {
+  const o = ctx.createOscillator(); o.type = type;
+  o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  const g = ctx.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(out); o.start(t); o.stop(t + dur + 0.02);
+}
+let clipCurve = null;
+function click(f, gain = 0.25, dur = 0.025) {
+  if (!ok()) return; const t = ctx.currentTime, k = 0.9 + Math.random() * 0.2, gv = gain * (0.85 + Math.random() * 0.3);
+  nz(t, dur, 'bandpass', 3200 * k, 1800 * k, 2, gv, master); osc(t, dur * 1.2, 'square', f * k, f * 0.7 * k, gv * 0.4, master);
+}
+export const gunSfx = {
+  shot() {
+    if (!ok()) return; const t = ctx.currentTime;
+    if (!clipCurve) { clipCurve = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 511.5 - 1; clipCurve[i] = Math.tanh(2.2 * x); } }
+    const shaper = ctx.createWaveShaper(); shaper.curve = clipCurve; // fresh per shot
+    const bus = ctx.createGain(); bus.gain.value = 0.55; bus.connect(shaper).connect(master);
+    nz(t, 0.04, 'highpass', 3000, 1800, 0.7, 0.9, bus);   // crack
+    nz(t, 0.22, 'bandpass', 900, 220, 0.9, 1.0, bus);     // mid punch
+    nz(t, 0.9, 'lowpass', 3500, 90, 0.7, 1.2, bus);       // blast body
+    osc(t, 0.6, 'sine', 95, 32, 1.4, bus);                // sub boom
+    osc(t, 1.0, 'sine', 58, 26, 1.0, bus);                // low rumble
+    osc(t, 0.12, 'triangle', 180, 60, 0.6, bus);          // chest thump
+    setTimeout(() => { bus.disconnect(); shaper.disconnect(); }, 1200);
+  },
+  cock() { click(900, 0.22); setTimeout(() => click(1300, 0.2), 45); },
+  dry() { click(520, 0.4, 0.035); },
+  open() { click(700, 0.25, 0.04); },
+  close() { click(1000, 0.3, 0.03); },
+  ejector() { click(600, 0.2, 0.06); },
+  insert() { click(1600, 0.12, 0.02); },
+  ratchet() { click(2200, 0.06, 0.012); },
+  detent() { click(1400, 0.18, 0.02); },
+  holster() { if (!ok()) return; const t = ctx.currentTime; nz(t, 0.12, 'lowpass', 500, 150, 0.7, 0.5, master); },
+  clatter(i = 0.5) { if (!ok()) return; const t = ctx.currentTime; nz(t, 0.08, 'lowpass', 600, 200, 0.7, 0.3 * i, master); osc(t, 0.15, 'triangle', 1400 + Math.random() * 400, 900, 0.12 * i, master); },
+  tink() { if (!ok()) return; const t = ctx.currentTime, f = 3000 + Math.random() * 1500; osc(t, 0.12, 'sine', f, f * 0.95, 0.06, master); },
+  impact(kind) {
+    if (!ok()) return; const t = ctx.currentTime;
+    if (kind === 'flesh') { nz(t, 0.09, 'lowpass', 900, 200, 0.7, 0.45, master); osc(t, 0.1, 'sine', 120, 50, 0.3, master); }
+    else if (kind === 'steel') { const f = 1800 + Math.random() * 900; osc(t, 0.3, 'sine', f, f * 0.97, 0.12, master); nz(t, 0.03, 'highpass', 5000, 4000, 1, 0.2, master); }
+    else nz(t, 0.12, 'lowpass', 700, 150, 0.7, 0.3, master);
+  },
+};

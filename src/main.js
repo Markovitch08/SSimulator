@@ -4,11 +4,12 @@ import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, hullDesc, bodyAlive, 
 import { facet, lambert, makeSword, basisQuat } from './lowpoly.js';
 import { Particles, Pieces } from './fx.js';
 import { Enemy, loadEnemyModel, loadStaticModel, TYPES } from './enemy.js';
-import { sfx, resumeAudio, loadAlert, loadSound, setListener, playAlertAt } from './audio.js';
+import { sfx, resumeAudio, loadAlert, loadSound, setListener, playAlertAt, gunSfx } from './audio.js';
 import { settings } from './settings.js';
+import { Revolver } from './revolver.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '3.4';
+export const VERSION = '3.5';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
@@ -312,8 +313,8 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight);
 });
 document.getElementById('spawn').addEventListener('click', () => { resumeAudio(); spawnPressed(); });
-renderer.xr.addEventListener('sessionstart', () => { resumeAudio(); camera.position.set(0, 0, 0); camera.rotation.set(0, 0, 0); });
-renderer.xr.addEventListener('sessionend', () => { camera.position.set(0, 1.65, 0); });
+renderer.xr.addEventListener('sessionstart', () => { resumeAudio(); camera.position.set(0, 0, 0); camera.rotation.set(0, 0, 0); swordState.state = 'holstered'; });
+renderer.xr.addEventListener('sessionend', () => { camera.position.set(0, 1.65, 0); swordState.state = 'held'; });
 
 // ---------------------------------------------------------------- sword target (hand pose)
 const GRIP_OFFSET = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2 + 0.25, 0, 0)); // blade out of the fist along grip -Z, tilted up a little
@@ -350,6 +351,7 @@ function updateTarget(dt) {
   const ov = window.game?.leftOverride;
   if (lg) { lg.updateMatrixWorld(true); lg.matrixWorld.decompose(leftT.pos, leftT.q, tmpV); leftT.q.multiply(GRIP_OFFSET); leftT.valid = true; }
   else if (ov) { leftT.pos.copy(ov.pos); leftT.q.copy(ov.q || target.q); leftT.valid = true; }
+  else if (window.game?.handOverride?.left) { leftT.pos.copy(window.game.handOverride.left.pos); leftT.q.copy(target.q); leftT.valid = true; }
   else leftT.valid = false;
   // two-handed: the blade points from the left hand toward the right along the grip
   if (left.twoHand && leftT.valid) {
@@ -833,9 +835,10 @@ function updateLeftInput() {
   if (xr) {
     for (const src of renderer.xr.getSession().inputSources) if (src.handedness === 'left' && src.gamepad) sq = !!src.gamepad.buttons[1]?.pressed;
   } else sq = !!window.game?.leftOverride?.squeeze;
+  if (window.game?.handOverride?.left) sq = hands.left.squeeze;
   left.prevSqueeze = left.squeeze; left.squeeze = sq && leftT.valid;
-  if (left.squeeze && !left.prevSqueeze) tryGrab();
-  if (!left.squeeze && left.prevSqueeze) releaseLeft(true);
+  if (left.squeeze && !left.prevSqueeze) { if (!equipGrab(hands.left)) tryGrab(); else handCol.setCollisionGroups(GROUPS.none); }
+  if (!left.squeeze && left.prevSqueeze) { if (equipRelease(hands.left)) handCol.setCollisionGroups(GROUPS.phand); else releaseLeft(true); }
 }
 
 function tryGrab() {
@@ -945,9 +948,18 @@ function fixedStep(h) {
     w.pre.lin.set(lv.x, lv.y, lv.z); w.pre.ang.set(av.x, av.y, av.z); w.pre.com.set(c.x, c.y, c.z);
     w.pre.pos.set(t.x, t.y, t.z); w.pre.q.set(r.x, r.y, r.z, r.w);
   }
-  for (const w of weapons) if (w.target.valid) driveBody(w.body, w.target, h, w === rightW && left.twoHand ? 1.6 : 1);
+  if (swordState.state === 'holstered') {
+    const sh = swordHolster();
+    swordBody.setTranslation(sh.p, true); swordBody.setRotation(sh.q, true);
+    swordBody.setLinvel({ x: 0, y: 0, z: 0 }, true); swordBody.setAngvel({ x: 0, y: 0, z: 0 }, true); swordBody.setGravityScale(0, true);
+    for (let i = 0; i < swordBody.numColliders(); i++) swordBody.collider(i).setCollisionGroups(GROUPS.none);
+  } else {
+    for (let i = 0; i < swordBody.numColliders(); i++) swordBody.collider(i).setCollisionGroups(GROUPS.psword);
+    swordBody.setGravityScale(swordState.state === 'held' ? 0 : 1, true);
+  }
+  for (const w of weapons) if (w.target.valid && (w !== rightW || swordState.state === 'held')) driveBody(w.body, w.target, h, w === rightW && left.twoHand ? 1.6 : 1);
   // the fist follows the left controller (lighter, so it shoves rather than smashes)
-  if (leftT.valid && !left.weapon) driveBody(handBody, leftT, h, 0.8, 0.6);
+  if (leftT.valid && !left.weapon && !holding.left) driveBody(handBody, leftT, h, 0.8, 0.6);
   for (const e of enemies) e.update(h);
   world.step();
   deflectThrown();
@@ -986,7 +998,7 @@ function updateButton(dt) {
   for (let wi = 0; wi < 2; wi++) {
     const w = weapons[wi];
     for (const f of [0.1, 0.35, 0.6, 0.8, 1]) {
-      if (!w) { probes.push(null); continue; }
+      if (!w || (w === rightW && swordState.state === 'holstered')) { probes.push(null); continue; }
       const sp = new THREE.Vector3(), sq = new THREE.Quaternion();
       readPose(w.body, sp, sq);
       probes.push(new THREE.Vector3(0, w.sword.tipY * f, 0).applyQuaternion(sq).add(sp));
@@ -1020,6 +1032,179 @@ function pressSpawnButton(byEnemy) {
   return true;
 }
 
+// ---------------------------------------------------------------- hands & equipment
+// Both controllers read once per frame (pose, velocity, a 5-frame average for throws, angular
+// velocity, button edges). The sword lives in a scabbard on the back, the revolver in a hip
+// holster on the left, rounds in a pouch on the right hip. Grip to take, hold to keep.
+const GUN_OFFSET = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.25, 0, 0));
+const mkHand = side => ({ side, pos: new THREE.Vector3(), q: new THREE.Quaternion(), prevPos: new THREE.Vector3(), prevQ: new THREE.Quaternion(), vel: new THREE.Vector3(), angVel: new THREE.Vector3(), avgVel: new THREE.Vector3(), avgAngVel: new THREE.Vector3(), hist: [], squeeze: false, prevSqueeze: false, trigger: 0, a: false, b: false, stickY: 0, click: false, valid: false });
+const hands = { right: mkHand('right'), left: mkHand('left') };
+const holding = { right: null, left: null };
+const desk = { trigger: 0, cock: false, open: false };
+const swordState = { state: 'held' }; // desktop starts with it in hand; VR starts with it on the back
+function readHands(dt) {
+  const xr = renderer.xr.isPresenting;
+  for (const side of ['right', 'left']) {
+    const h = hands[side];
+    const was = { a: h.a, b: h.b, click: h.click, sq: h.squeeze, back: h.stickY > 0.7 };
+    h.prevPos.copy(h.pos); h.prevQ.copy(h.q);
+    const ov = window.game?.handOverride?.[side];
+    if (ov) {
+      h.pos.copy(ov.pos); h.q.copy(ov.q || new THREE.Quaternion()); h.squeeze = !!ov.squeeze; h.trigger = ov.trigger || 0;
+      h.a = !!ov.a; h.b = !!ov.b; h.stickY = ov.stickY || 0; h.click = !!ov.click; h.valid = true;
+    } else if (xr) {
+      const g = handGrip(side); let gp = null;
+      for (const src of renderer.xr.getSession().inputSources) if (src.handedness === side) gp = src.gamepad;
+      if (g && gp) {
+        g.updateMatrixWorld(true); g.matrixWorld.decompose(h.pos, h.q, tmpV); h.q.multiply(GUN_OFFSET);
+        h.squeeze = !!gp.buttons[1]?.pressed; h.trigger = gp.buttons[0]?.value || 0; h.a = !!gp.buttons[4]?.pressed; h.b = !!gp.buttons[5]?.pressed;
+        h.stickY = gp.axes[3] || 0; h.click = !!gp.buttons[3]?.pressed; h.valid = true;
+      } else h.valid = false;
+    } else if (side === 'right') { // desktop: the mouse hand; a drawn gun points where you look
+      h.pos.copy(target.pos); camera.getWorldQuaternion(h.q); h.squeeze = false; h.trigger = desk.trigger;
+      h.a = desk.cock; h.b = desk.open; h.stickY = 0; h.click = false; h.valid = true;
+    } else h.valid = false;
+    if (dt > 0 && h.valid) {
+      h.vel.subVectors(h.pos, h.prevPos).divideScalar(dt); if (h.vel.length() > 40) h.vel.set(0, 0, 0);
+      const dq = h.q.clone().multiply(h.prevQ.clone().invert()); if (dq.w < 0) dq.set(-dq.x, -dq.y, -dq.z, -dq.w);
+      const ang = 2 * Math.acos(Math.min(1, dq.w)), sn = Math.sqrt(Math.max(1e-9, 1 - dq.w * dq.w));
+      h.angVel.set(dq.x / sn, dq.y / sn, dq.z / sn).multiplyScalar(ang < 1e-5 ? 0 : Math.min(60, ang / dt));
+      h.hist.push([h.vel.clone(), h.angVel.clone()]); if (h.hist.length > 5) h.hist.shift();
+      h.avgVel.set(0, 0, 0); h.avgAngVel.set(0, 0, 0);
+      for (const [v, w] of h.hist) { h.avgVel.add(v); h.avgAngVel.add(w); }
+      h.avgVel.divideScalar(h.hist.length); h.avgAngVel.divideScalar(h.hist.length);
+    }
+    h.aPressed = h.a && !was.a; h.bPressed = h.b && !was.b; h.clickPressed = h.click && !was.click;
+    h.stickBack = h.stickY > 0.7 && !was.back; h.prevSqueeze = was.sq;
+  }
+  desk.cock = false; desk.open = false;
+}
+function bodyFrame() {
+  const f = camera.getWorldDirection(new THREE.Vector3()).setY(0);
+  if (f.lengthSq() < 1e-4) f.set(0, 0, -1);
+  f.normalize();
+  return { f, r: new THREE.Vector3(-f.z, 0, f.x), head: player.head };
+}
+function swordHolster() { // grip just behind the right shoulder, blade down across the back
+  const { f, r, head } = bodyFrame();
+  const p = head.clone().addScaledVector(r, 0.14).addScaledVector(f, -0.17).add(new THREE.Vector3(0, -0.1, 0));
+  const blade = new THREE.Vector3(0, -0.85, 0).addScaledVector(r, -0.5).addScaledVector(f, -0.05).normalize();
+  return { p, q: basisQuat(blade, f.clone().negate()) };
+}
+function gunHolster() { // left hip, barrel down, sights facing forward
+  const { f, r, head } = bodyFrame();
+  const p = head.clone().addScaledVector(r, -0.2).addScaledVector(f, 0.05).add(new THREE.Vector3(0, -0.72, 0));
+  const z = new THREE.Vector3(0, 1, 0), y = f.clone(), x = new THREE.Vector3().crossVectors(y, z);
+  return { p, q: new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z)) };
+}
+function pouchPos() { const { f, r, head } = bodyFrame(); return head.clone().addScaledVector(r, 0.2).addScaledVector(f, 0.06).add(new THREE.Vector3(0, -0.72, 0)); }
+
+const leather = lambert(0x5a3a22);
+const holsterMesh = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.028, 0.022, 0.16, 6)), leather);
+const pouchMesh = new THREE.Mesh(facet(new THREE.BoxGeometry(0.09, 0.07, 0.04)), leather);
+const scabbardMesh = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.03, 0.02, 0.8, 5).translate(0, -0.48, 0)), leather);
+scene.add(holsterMesh, pouchMesh, scabbardMesh);
+
+const revolver = new Revolver({
+  scene, particles, enemies, player,
+  pulse: (side, i, ms) => pulse(side, i, ms),
+  holster: gunHolster,
+  spawnCasing(p, v) {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.028, 6), revolver.mats.brass);
+    m.position.copy(p); scene.add(m);
+    const b = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(p.x, p.y, p.z).setAngularDamping(0.5));
+    world.createCollider(RAPIER.ColliderDesc.cylinder(0.014, 0.006).setDensity(8000).setCollisionGroups(GROUPS.debris), b);
+    b.setLinvel(v, true); b.setAngvel({ x: Math.random() * 20 - 10, y: Math.random() * 20 - 10, z: Math.random() * 20 - 10 }, true);
+    pieces.add(m, b, 8);
+    setTimeout(() => gunSfx.tink(), 350 + Math.random() * 200);
+  },
+});
+
+function equipGrab(h) {
+  if (revolver.tryGrab(h)) { holding[h.side] = 'gun'; return true; }
+  if (revolver.held && revolver.hand !== h.side && h.pos.distanceTo(pouchPos()) < 0.15) { revolver.roundsHand = h.side; holding[h.side] = 'rounds'; pulse(h.side, 0.2, 20); return true; }
+  if (h.side === 'right' && swordState.state !== 'held') {
+    const near = swordState.state === 'holstered' ? h.pos.distanceTo(swordHolster().p) < 0.3 : h.pos.distanceTo(tmpV.copy(swordBody.translation())) < 0.25;
+    if (near) { swordState.state = 'held'; holding.right = 'sword'; pulse('right', 0.3, 30); return true; }
+  }
+  return false;
+}
+function equipRelease(h) {
+  const what = holding[h.side];
+  if (!what) return false;
+  holding[h.side] = null;
+  if (what === 'gun') revolver.release(h);
+  else if (what === 'rounds') revolver.roundsHand = null;
+  else if (what === 'sword') {
+    releaseLeft(false); // a two-handed grip ends with it
+    if (h.pos.distanceTo(swordHolster().p) < 0.3) { swordState.state = 'holstered'; sfx.thump(0.3); }
+    else { swordState.state = 'dropped'; swordBody.setGravityScale(1, true); } // keeps its momentum: a throw
+  }
+  return true;
+}
+function updateEquipment(dt) {
+  const r = hands.right;
+  if (r.valid && renderer.xr.isPresenting || window.game?.handOverride?.right) {
+    if (r.squeeze && !r.prevSqueeze) equipGrab(r);
+    if (!r.squeeze && r.prevSqueeze) equipRelease(r);
+  }
+  for (const h of [hands.right, hands.left]) if (h.clickPressed) { // thumbstick click recalls dropped gear
+    revolver.recall();
+    if (swordState.state === 'dropped') swordState.state = 'holstered';
+  }
+  if (swordState.state === 'dropped') { const t = swordBody.translation(); if (t.y < -2 || Math.hypot(t.x - player.head.x, t.z - player.head.z) > 60) swordState.state = 'holstered'; }
+  target.valid = swordState.state === 'held' && (renderer.xr.isPresenting ? hands.right.valid : true);
+  revolver.update(dt, hands);
+  const gh = gunHolster(); holsterMesh.position.copy(gh.p).add(new THREE.Vector3(0, -0.03, 0)); holsterMesh.quaternion.copy(gh.q).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)));
+  pouchMesh.position.copy(pouchPos()); pouchMesh.quaternion.copy(camera.getWorldQuaternion(new THREE.Quaternion()));
+  const sh = swordHolster(); scabbardMesh.position.copy(sh.p); scabbardMesh.quaternion.copy(sh.q).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI, 0, 0)));
+  const vis = renderer.xr.isPresenting || !!window.game?.handOverride;
+  holsterMesh.visible = pouchMesh.visible = scabbardMesh.visible = vis;
+}
+// desktop: G draws/holsters the gun, left click = trigger, C cocks, V opens/closes, L loads, H sword
+addEventListener('keydown', e => {
+  if (e.repeat || renderer.xr.isPresenting) return;
+  if (e.code === 'KeyG') {
+    if (revolver.held) { revolver.state = 'holstered'; revolver.hand = null; holding.right = null; swordState.state = 'held'; }
+    else { revolver.setBody('kinematic'); revolver.state = 'held'; revolver.hand = 'right'; revolver.tween = 0; holding.right = 'gun'; swordState.state = 'holstered'; }
+  }
+  if (e.code === 'KeyC') desk.cock = true;
+  if (e.code === 'KeyV') desk.open = true;
+  if (e.code === 'KeyL' && revolver.open) revolver.chambers = revolver.chambers.map(c => (c === 'empty' ? 'live' : c));
+  if (e.code === 'KeyH' && !revolver.held) swordState.state = swordState.state === 'held' ? 'holstered' : 'held';
+});
+addEventListener('pointerdown', e => { if (e.button === 0) desk.trigger = 1; });
+addEventListener('pointerup', e => { if (e.button === 0) desk.trigger = 0; });
+
+// motion blur: a fading ribbon between the blade's base and tip over the last few frames
+const TRAIL_N = 10;
+function makeTrail() {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(TRAIL_N * 2 * 3), 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(TRAIL_N * 2 * 4), 4));
+  const idx = []; for (let i = 0; i < TRAIL_N - 1; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  g.setIndex(idx);
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false }));
+  m.frustumCulled = false; scene.add(m);
+  return { m, hist: [] };
+}
+function updateTrail(w) {
+  const tr = w.trail ||= makeTrail();
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(); readPose(w.body, p, q);
+  tr.hist.unshift([new THREE.Vector3(0, w.sword.baseY + 0.05, 0).applyQuaternion(q).add(p), new THREE.Vector3(0, w.sword.tipY, 0).applyQuaternion(q).add(p)]);
+  if (tr.hist.length > TRAIL_N) tr.hist.pop();
+  const speed = w.tipVel.length(), k = THREE.MathUtils.clamp((speed - 3) / 9, 0, 0.55);
+  tr.m.visible = k > 0.01 && tr.hist.length === TRAIL_N;
+  if (!tr.m.visible) return;
+  const pos = tr.m.geometry.attributes.position, col = tr.m.geometry.attributes.color;
+  tr.hist.forEach(([a, b], i) => {
+    pos.setXYZ(i * 2, a.x, a.y, a.z); pos.setXYZ(i * 2 + 1, b.x, b.y, b.z);
+    const al = k * (1 - i / TRAIL_N);
+    col.setXYZW(i * 2, 0.85, 0.9, 1, al * 0.4); col.setXYZW(i * 2 + 1, 0.95, 0.97, 1, al);
+  });
+  pos.needsUpdate = true; col.needsUpdate = true;
+}
+
 // ---------------------------------------------------------------- main loop
 const clock = new THREE.Clock();
 let acc = 0;
@@ -1036,6 +1221,8 @@ renderer.setAnimationLoop(() => {
     setListener(player.head, tmpV.set(0, 0, -1).applyQuaternion(q), tmpV2.set(0, 1, 0).applyQuaternion(q));
   }
   updateTarget(dt);
+  readHands(dt);
+  updateEquipment(dt);
   updateLeftInput();
   updateSpawnMenu();
 
@@ -1044,13 +1231,13 @@ renderer.setAnimationLoop(() => {
   while (acc >= FIXED && n < 6) { fixedStep(FIXED); acc -= FIXED; n++; }
   if (n === 6) acc = 0;
 
-  for (const w of weapons) readPose(w.body, w.sword.group.position, w.sword.group.quaternion);
+  for (const w of weapons) { readPose(w.body, w.sword.group.position, w.sword.group.quaternion); updateTrail(w); }
   const t = swordBody.translation();
   readPose(handBody, handMesh.position, handMesh.quaternion);
-  handMesh.visible = leftT.valid && !left.weapon && !left.twoHand;
+  handMesh.visible = leftT.valid && !left.weapon && !left.twoHand && !holding.left;
   ghost.position.copy(target.pos); ghost.quaternion.copy(target.q);
   const gap = target.pos.distanceTo(psword.group.position);
-  ghost.visible = tether.visible = gap > 0.04;
+  ghost.visible = tether.visible = gap > 0.04 && swordState.state === 'held';
   tether.geometry.attributes.position.setXYZ(0, target.pos.x, target.pos.y, target.pos.z);
   tether.geometry.attributes.position.setXYZ(1, t.x, t.y, t.z);
   tether.geometry.attributes.position.needsUpdate = true;
@@ -1072,4 +1259,4 @@ renderer.setAnimationLoop(() => {
 });
 
 // test / debug hook
-window.game = { menu, spawnFromMenu, glitch, GLITCHES, run, popups, left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };
+window.game = { revolver, hands, holding, swordState, swordHolster, pouchPos, menu, spawnFromMenu, glitch, GLITCHES, run, popups, left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };
