@@ -9,7 +9,7 @@ import { settings } from './settings.js';
 import { Revolver } from './revolver.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '3.5';
+export const VERSION = '3.6';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
@@ -1035,8 +1035,8 @@ function pressSpawnButton(byEnemy) {
 // ---------------------------------------------------------------- hands & equipment
 // Both controllers read once per frame (pose, velocity, a 5-frame average for throws, angular
 // velocity, button edges). The sword lives in a scabbard on the back, the revolver in a hip
-// holster on the left, rounds in a pouch on the right hip. Grip to take, hold to keep.
-const GUN_OFFSET = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.25, 0, 0));
+// holster on the right hip. Grip to take, hold to keep.
+const GUN_OFFSET = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.65, 0, 0));
 const mkHand = side => ({ side, pos: new THREE.Vector3(), q: new THREE.Quaternion(), prevPos: new THREE.Vector3(), prevQ: new THREE.Quaternion(), vel: new THREE.Vector3(), angVel: new THREE.Vector3(), avgVel: new THREE.Vector3(), avgAngVel: new THREE.Vector3(), hist: [], squeeze: false, prevSqueeze: false, trigger: 0, a: false, b: false, stickY: 0, click: false, valid: false });
 const hands = { right: mkHand('right'), left: mkHand('left') };
 const holding = { right: null, left: null };
@@ -1091,19 +1091,17 @@ function swordHolster() { // grip just behind the right shoulder, blade down acr
   const blade = new THREE.Vector3(0, -0.85, 0).addScaledVector(r, -0.5).addScaledVector(f, -0.05).normalize();
   return { p, q: basisQuat(blade, f.clone().negate()) };
 }
-function gunHolster() { // left hip, barrel down, sights facing forward
+function gunHolster() { // right hip, barrel down, sights facing forward
   const { f, r, head } = bodyFrame();
-  const p = head.clone().addScaledVector(r, -0.2).addScaledVector(f, 0.05).add(new THREE.Vector3(0, -0.72, 0));
+  const p = head.clone().addScaledVector(r, 0.2).addScaledVector(f, 0.05).add(new THREE.Vector3(0, -0.72, 0));
   const z = new THREE.Vector3(0, 1, 0), y = f.clone(), x = new THREE.Vector3().crossVectors(y, z);
   return { p, q: new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z)) };
 }
-function pouchPos() { const { f, r, head } = bodyFrame(); return head.clone().addScaledVector(r, 0.2).addScaledVector(f, 0.06).add(new THREE.Vector3(0, -0.72, 0)); }
 
 const leather = lambert(0x5a3a22);
 const holsterMesh = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.028, 0.022, 0.16, 6)), leather);
-const pouchMesh = new THREE.Mesh(facet(new THREE.BoxGeometry(0.09, 0.07, 0.04)), leather);
 const scabbardMesh = new THREE.Mesh(facet(new THREE.CylinderGeometry(0.03, 0.02, 0.8, 5).translate(0, -0.48, 0)), leather);
-scene.add(holsterMesh, pouchMesh, scabbardMesh);
+scene.add(holsterMesh, scabbardMesh);
 
 const revolver = new Revolver({
   scene, particles, enemies, player,
@@ -1122,7 +1120,6 @@ const revolver = new Revolver({
 
 function equipGrab(h) {
   if (revolver.tryGrab(h)) { holding[h.side] = 'gun'; return true; }
-  if (revolver.held && revolver.hand !== h.side && h.pos.distanceTo(pouchPos()) < 0.15) { revolver.roundsHand = h.side; holding[h.side] = 'rounds'; pulse(h.side, 0.2, 20); return true; }
   if (h.side === 'right' && swordState.state !== 'held') {
     const near = swordState.state === 'holstered' ? h.pos.distanceTo(swordHolster().p) < 0.3 : h.pos.distanceTo(tmpV.copy(swordBody.translation())) < 0.25;
     if (near) { swordState.state = 'held'; holding.right = 'sword'; pulse('right', 0.3, 30); return true; }
@@ -1134,7 +1131,6 @@ function equipRelease(h) {
   if (!what) return false;
   holding[h.side] = null;
   if (what === 'gun') revolver.release(h);
-  else if (what === 'rounds') revolver.roundsHand = null;
   else if (what === 'sword') {
     releaseLeft(false); // a two-handed grip ends with it
     if (h.pos.distanceTo(swordHolster().p) < 0.3) { swordState.state = 'holstered'; sfx.thump(0.3); }
@@ -1156,12 +1152,11 @@ function updateEquipment(dt) {
   target.valid = swordState.state === 'held' && (renderer.xr.isPresenting ? hands.right.valid : true);
   revolver.update(dt, hands);
   const gh = gunHolster(); holsterMesh.position.copy(gh.p).add(new THREE.Vector3(0, -0.03, 0)); holsterMesh.quaternion.copy(gh.q).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)));
-  pouchMesh.position.copy(pouchPos()); pouchMesh.quaternion.copy(camera.getWorldQuaternion(new THREE.Quaternion()));
   const sh = swordHolster(); scabbardMesh.position.copy(sh.p); scabbardMesh.quaternion.copy(sh.q).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI, 0, 0)));
   const vis = renderer.xr.isPresenting || !!window.game?.handOverride;
-  holsterMesh.visible = pouchMesh.visible = scabbardMesh.visible = vis;
+  holsterMesh.visible = scabbardMesh.visible = vis;
 }
-// desktop: G draws/holsters the gun, left click = trigger, C cocks, V opens/closes, L loads, H sword
+// desktop: G draws/holsters the gun, left click = trigger, C cocks, R reloads, H sword
 addEventListener('keydown', e => {
   if (e.repeat || renderer.xr.isPresenting) return;
   if (e.code === 'KeyG') {
@@ -1169,8 +1164,7 @@ addEventListener('keydown', e => {
     else { revolver.setBody('kinematic'); revolver.state = 'held'; revolver.hand = 'right'; revolver.tween = 0; holding.right = 'gun'; swordState.state = 'holstered'; }
   }
   if (e.code === 'KeyC') desk.cock = true;
-  if (e.code === 'KeyV') desk.open = true;
-  if (e.code === 'KeyL' && revolver.open) revolver.chambers = revolver.chambers.map(c => (c === 'empty' ? 'live' : c));
+  if (e.code === 'KeyR') desk.open = true;
   if (e.code === 'KeyH' && !revolver.held) swordState.state = swordState.state === 'held' ? 'holstered' : 'held';
 });
 addEventListener('pointerdown', e => { if (e.button === 0) desk.trigger = 1; });
@@ -1259,4 +1253,4 @@ renderer.setAnimationLoop(() => {
 });
 
 // test / debug hook
-window.game = { revolver, hands, holding, swordState, swordHolster, pouchPos, menu, spawnFromMenu, glitch, GLITCHES, run, popups, left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };
+window.game = { revolver, hands, holding, swordState, swordHolster, menu, spawnFromMenu, glitch, GLITCHES, run, popups, left, weapons, leftT, settings, handBody, Enemy, ctx, stats, spawnEnemy, enemies, player, pieces, target, mouse, swordBody, resetGame, world, DRIVE };

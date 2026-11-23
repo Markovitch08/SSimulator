@@ -11,7 +11,7 @@ const drop = r => 0.5 * GRAV * (r / V0) ** 2;
 const ZERO_Y = BORE_Y - drop(ZERO);
 const FRONT_Y = REAR.y + (ZERO_Y - REAR.y) * (REAR.z - FRONT_Z) / (REAR.z + ZERO);
 const BULLET_Q = grp(G.PSWORD, G.GROUND | G.EALIVE | G.ESWORD | G.PIECE | G.DEBRIS);
-const DMG = 20, PUSH = 16;
+const DMG = 35, PUSH = 18;
 const rnd = (a, b) => a + Math.random() * (b - a);
 const TAU = Math.PI * 2;
 
@@ -197,7 +197,10 @@ export class Revolver {
         if (Math.abs(goal - this.twirl) < 0.02) { this.twirl = 0; this.twirlV = 0; this.twirlCd = 0.35; }
       } else this.twirl += this.twirlV * dt;
     }
-    this.twirlPivot.rotation.x = -this.twirl;
+    // reload pose: muzzle tips up and the gun rolls to show the open cylinder
+    const rl = this.open ? Math.sin(Math.min(1, this.openT / 0.95) * Math.PI) : 0;
+    this.reloadPose = (this.reloadPose || 0) + (rl - (this.reloadPose || 0)) * (1 - Math.exp(-20 * dt));
+    this.twirlPivot.rotation.set(-this.twirl + 0.7 * this.reloadPose, 0, 0.6 * this.reloadPose);
 
     // rounds held in the free hand while reloading
     const rh = this.roundsHand ? hands[this.roundsHand] : null;
@@ -217,30 +220,23 @@ export class Revolver {
     if (twirling && gh.trigger > 0.5) this.twirlV = Math.min(this.twirlV, 5.9); // quick catch
     if (twirling) { this.trig = gh.trigger; return; }
 
-    // open / close the cylinder (B/Y)
-    if (gh.bPressed) { if (this.open) { if (this.openT > 0.25) this.closeCylinder(false); } else this.openCylinder(); }
+    // reload (B/Y): one quick automatic animation. The crane swings out, the empties fall,
+    // six fresh rounds click in, and a flick snaps it shut with a spin.
+    if (gh.bPressed && !this.open && this.chambers.some(c => c !== 'live')) this.openCylinder();
     if (this.open) {
       this.openT += dt;
       if (!this.ejected && this.openT > 0.12) this.eject(gh);
-      // push it shut with the empty free hand (instantaneous velocity, toward the frame)
-      const cylW = this.cyl.getWorldPosition(new THREE.Vector3());
-      if (other && this.openT > 0.25 && !this.roundsHand && other.pos.distanceTo(cylW) < 0.1) {
-        const toFrame = right.clone(); // the crane swings left, so closing pushes toward +X
-        if (other.vel.dot(toFrame) > 0.35) this.closeCylinder(false);
-      }
-      // wrist flick about the barrel axis snaps it shut, spinning
-      if (this.open && this.openT > 0.25 && Math.abs(gh.angVel.dot(bore)) > 9) this.closeCylinder(true);
-      // rounds held near the open cylinder feed in, one every 0.07 s
-      if (this.open && this.roundsHand && other && other.side === this.roundsHand && other.pos.distanceTo(cylW) < 0.12) {
+      if (this.openT > 0.3) {
         this.feedT -= dt;
         if (this.feedT <= 0) {
           for (let k = 1; k <= 6; k++) {
             const i = (this.chamber + k) % 6;
-            if (this.chambers[i] === 'empty') { this.chambers[i] = 'live'; gunSfx.insert(); this.g.pulse(this.hand, 0.1, 10); this.g.pulse(other.side, 0.1, 10); break; }
+            if (this.chambers[i] !== 'live') { this.chambers[i] = 'live'; gunSfx.insert(); this.g.pulse(this.hand, 0.1, 10); break; }
           }
-          this.feedT = 0.07;
+          this.feedT = 0.065;
         }
       }
+      if (this.openT > 0.3 && this.chambers.every(c => c === 'live') && this.openT > 0.78) { this.closeCylinder(true); this.g.pulse(this.hand, 0.4, 30); }
       this.trig = gh.trigger; this.triggerArmed = gh.trigger < 0.25;
       return; // nothing fires while it's open
     }
@@ -272,7 +268,7 @@ export class Revolver {
     else { gunSfx.dry(); this.g.pulse(this.hand, 0.15, 15); }
   }
 
-  openCylinder() { this.open = true; this.openT = 0; this.ejected = false; this.cocked = false; gunSfx.open(); }
+  openCylinder() { this.open = true; this.openT = 0; this.feedT = 0; this.ejected = false; this.cocked = false; gunSfx.open(); }
   closeCylinder(spin) {
     this.open = false; gunSfx.close();
     if (spin) { this.freeSpin = 26 * rnd(0.85, 1.15); this.lastDetent = Math.floor(this.cylAngle / (TAU / 6)); }
