@@ -11,7 +11,8 @@ const drop = r => 0.5 * GRAV * (r / V0) ** 2;
 const ZERO_Y = BORE_Y - drop(ZERO);
 const FRONT_Y = REAR.y + (ZERO_Y - REAR.y) * (REAR.z - FRONT_Z) / (REAR.z + ZERO);
 const BULLET_Q = grp(G.PSWORD, G.GROUND | G.EALIVE | G.ESWORD | G.PIECE | G.DEBRIS);
-const DMG = 35, PUSH = 18;
+const CHAINS_LIMBS = new Set(['uArmL', 'lArmL', 'uArmR', 'lArmR', 'thighL', 'shinL', 'thighR', 'shinR']);
+const DMG = 45, PUSH = 22, LIMB_SHOTS = 3; // a limb that eats LIMB_SHOTS bullets comes off
 const rnd = (a, b) => a + Math.random() * (b - a);
 const TAU = Math.PI * 2;
 
@@ -27,6 +28,8 @@ export class Revolver {
     this.twirl = 0; this.twirlV = 0; this.twirlCd = 0; this.fanCd = 0; this.feedT = 0;
     this.roundsHand = null; this.flashT = 0; this.clatterCd = 0; this.recallT = 0;
     this.build();
+    this.puffs = []; this.wisp = 0; this.wispT = 0;
+    this.puffGeo = new THREE.IcosahedronGeometry(1, 0);
   }
 
   build() {
@@ -131,6 +134,15 @@ export class Revolver {
     const other = this.hand ? hands[this.hand === 'right' ? 'left' : 'right'] : null;
     this.fanCd -= dt; this.twirlCd -= dt; this.clatterCd -= dt; this.flashT -= dt;
     this.flash.visible = this.flashT > 0;
+    this.updatePuffs(dt);
+    if (this.wisp > 0) { // smoke curling up out of a hot barrel
+      this.wisp -= dt; this.wispT -= dt;
+      if (this.wispT <= 0) {
+        this.wispT = 0.05;
+        const { o } = this.muzzleRay();
+        this.puff(o, new THREE.Vector3(rnd(-0.03, 0.03), 0.12, rnd(-0.03, 0.03)), { size: 0.008, grow: 0.05 * this.wisp, life: 1.1, opacity: 0.35 * Math.min(1, this.wisp), drag: 1, rise: 0.15 });
+      }
+    }
 
     // where the gun goes
     const hol = this.g.holster();
@@ -190,17 +202,17 @@ export class Revolver {
 
     // twirl about the trigger guard
     if (this.twirlV > 0) {
-      this.twirlV *= Math.exp(-1.4 * dt);
-      if (this.twirlV < 6) { // caught: ease to the nearest full turn
+      this.twirlV *= Math.exp(-2.2 * dt);
+      if (this.twirlV < 7) { // caught: ease to the nearest full turn
         const goal = Math.round(this.twirl / TAU) * TAU;
-        this.twirl += (goal - this.twirl) * (1 - Math.exp(-14 * dt));
+        this.twirl += (goal - this.twirl) * (1 - Math.exp(-20 * dt));
         if (Math.abs(goal - this.twirl) < 0.02) { this.twirl = 0; this.twirlV = 0; this.twirlCd = 0.35; }
       } else this.twirl += this.twirlV * dt;
     }
     // reload pose: muzzle tips up and the gun rolls to show the open cylinder
     const rl = this.open ? Math.sin(Math.min(1, this.openT / 0.95) * Math.PI) : 0;
     this.reloadPose = (this.reloadPose || 0) + (rl - (this.reloadPose || 0)) * (1 - Math.exp(-20 * dt));
-    this.twirlPivot.rotation.set(-this.twirl + 0.7 * this.reloadPose, 0, 0.6 * this.reloadPose);
+    this.twirlPivot.rotation.set((this.twirlSign || -1) * this.twirl + 0.7 * this.reloadPose, 0, 0.6 * this.reloadPose);
 
     // rounds held in the free hand while reloading
     const rh = this.roundsHand ? hands[this.roundsHand] : null;
@@ -215,9 +227,9 @@ export class Revolver {
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.root.quaternion);
     const bore = new THREE.Vector3(0, 0, -1).applyQuaternion(this.root.quaternion);
     if (!twirling && this.twirlCd <= 0 && !this.cocked && !this.open && gh.trigger < 0.2 && Math.abs(gh.angVel.dot(right)) > 10) {
-      this.twirlV = 28; this.twirl = 0;
+      this.twirlV = 28; this.twirl = 0; this.twirlSign = Math.sign(gh.angVel.dot(right)); // spins the way it was flicked
     }
-    if (twirling && gh.trigger > 0.5) this.twirlV = Math.min(this.twirlV, 5.9); // quick catch
+    if (twirling && gh.trigger > 0.5) this.twirlV = Math.min(this.twirlV, 6.9); // quick catch
     if (twirling) { this.trig = gh.trigger; return; }
 
     // reload (B/Y): one quick automatic animation. The crane swings out, the empties fall,
@@ -289,6 +301,32 @@ export class Revolver {
   }
 
   // ---------------------------------------------------------------- shooting
+  // soft low-poly puffs: gun smoke and blood mist. Each grows, drifts and fades, then is reused.
+  puff(pos, vel, { color = 0xd8dce0, size = 0.03, grow = 0.25, life = 0.9, opacity = 0.55, drag = 3, rise = 0.25 } = {}) {
+    let p = this.puffs.find(x => x.age >= x.life);
+    if (!p) {
+      if (this.puffs.length >= 70) p = this.puffs.reduce((a, b) => (a.age / a.life > b.age / b.life ? a : b));
+      else {
+        p = { m: new THREE.Mesh(this.puffGeo, new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false })), vel: new THREE.Vector3() };
+        p.m.frustumCulled = false; this.g.scene.add(p.m); this.puffs.push(p);
+      }
+    }
+    p.m.material.color.setHex(color); p.m.position.copy(pos); p.vel.copy(vel); p.m.visible = true;
+    p.m.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
+    Object.assign(p, { age: 0, life, size, grow, opacity, drag, rise });
+  }
+  updatePuffs(dt) {
+    for (const p of this.puffs) {
+      if (p.age >= p.life) { p.m.visible = false; continue; }
+      p.age += dt; const k = Math.min(1, p.age / p.life);
+      p.vel.multiplyScalar(Math.exp(-p.drag * dt)); p.vel.y += p.rise * dt;
+      p.m.position.addScaledVector(p.vel, dt);
+      p.m.scale.setScalar(p.size + p.grow * (1 - (1 - k) * (1 - k)));
+      p.m.material.opacity = p.opacity * (1 - k) * (1 - k);
+      p.m.rotation.x += dt * 0.6; p.m.rotation.y += dt * 0.4;
+    }
+  }
+
   shoot() {
     this.root.updateMatrixWorld(true);
     const { o, d } = this.muzzleRay();
@@ -297,7 +335,23 @@ export class Revolver {
     this.rec.z[1] += 0.55; this.rec.yaw[1] += rnd(-1, 1) * 2.5;
     this.flashT = 0.05; this.flash.rotation.z = Math.random() * TAU; this.flash.scale.setScalar(rnd(0.8, 1.3));
     this.g.particles.emit('spark', o, d, 8, 3);
+    // a thick cloud out of the barrel, a ring blown off the cylinder gap, then a lingering wisp
+    for (let i = 0; i < 9; i++) this.puff(o.clone().addScaledVector(d, 0.02 + i * 0.03), d.clone().multiplyScalar(rnd(1.5, 6)).add(new THREE.Vector3(rnd(-0.4, 0.4), rnd(-0.2, 0.5), rnd(-0.4, 0.4))), { size: rnd(0.025, 0.045), grow: rnd(0.12, 0.22), life: rnd(0.9, 1.6), opacity: 0.6, drag: 4 });
+    const cylW = this.cyl.getWorldPosition(new THREE.Vector3()), side = new THREE.Vector3(1, 0, 0).applyQuaternion(this.root.quaternion);
+    for (const s of [-1, 1]) this.puff(cylW, side.clone().multiplyScalar(s * rnd(0.8, 1.6)).add(new THREE.Vector3(0, 0.3, 0)), { size: 0.02, grow: 0.08, life: 0.7, opacity: 0.45 });
+    this.wisp = 1.6;
     gunSfx.shot(); this.g.pulse(this.hand, 1, 90);
+  }
+
+  // purely visual: a red mist that blooms out of the wound and the exit, plus a spray of droplets
+  bloodBurst(pt, dir) {
+    for (let i = 0; i < 7; i++) {
+      const out = i < 4 ? dir.clone().multiplyScalar(rnd(1.5, 3.5)) : dir.clone().multiplyScalar(-rnd(0.8, 2));
+      out.add(new THREE.Vector3(rnd(-0.8, 0.8), rnd(-0.3, 0.9), rnd(-0.8, 0.8)));
+      this.puff(pt, out, { color: i % 2 ? 0x9e0016 : 0xc8102e, size: rnd(0.02, 0.035), grow: rnd(0.08, 0.16), life: rnd(0.25, 0.45), opacity: 0.85, drag: 7, rise: -1.5 });
+    }
+    this.g.particles.emit('blood', pt, dir, 14, 4);
+    this.g.particles.emit('blood', pt, dir.clone().negate(), 6, 2);
   }
 
   // ballistic trace in 1/120 s steps, a raycast per segment; the first hit wins
@@ -319,7 +373,13 @@ export class Revolver {
     const info = phys.info.get(collider.handle), g = this.g;
     if (info && info.kind === 'enemy' && !info.enemy.dead) {
       const e = info.enemy, part = e.parts[info.part];
+      const armored = e.armor && e.armor[info.part] && e.armor[info.part].hp > 0;
       e.takeHit({ part: info.part, point: pt, dir: dir.clone(), speed: 6, dmg: DMG, cut: false });
+      if (!armored && !e.dead && info.part !== 'head' && CHAINS_LIMBS.has(info.part) && !e.lost.has(info.part)) {
+        e.gunHits ||= {}; e.gunHits[info.part] = (e.gunHits[info.part] || 0) + 1;
+        if (e.gunHits[info.part] >= LIMB_SHOTS) { e.gunHits[info.part] = 0; e.cutLimb(info.part, { part: info.part, point: pt, dir: dir.clone(), speed: 8, dmg: DMG, cut: true }); }
+      }
+      if (!armored) this.bloodBurst(pt, dir);
       if (!e.lost.has(info.part) && part.body && !e.dead) part.body.applyImpulseAtPoint(dir.clone().multiplyScalar(PUSH), pt, true);
       else if (e.dead && part.body) part.body.applyImpulseAtPoint(dir.clone().multiplyScalar(PUSH), pt, true);
       gunSfx.impact('flesh');
