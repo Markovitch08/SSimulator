@@ -6,6 +6,7 @@ import { sfx } from './audio.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { settings } from './settings.js';
+import { Tongue } from './parasite.js';
 
 // ---------------------------------------------------------------------------
 // Enemy = hidden procedural "target skeleton" (two-bone IK, no keyframed
@@ -356,7 +357,10 @@ export const TYPES = {
   },
   // Pilot: picks up the swords of the dead. Each sword he takes makes its owner's corpse
   // pull itself back together and stand up again; killing him stops it.
-  pilot: { model: 'pilot', hp: 650, cutMul: 1.2, bleedMul: 0.8, kdDmg: 100, kdChance: 0.15, str: 1.25, dual: false, weight: 0.17, walk: 1.7, pilot: true },
+  pilot: { model: 'pilot', hp: 650, cutMul: 1.2, bleedMul: 0.8, kdDmg: 100, kdChance: 0.15, str: 1.25, dual: false, weight: 0.17, walk: 1.7, pilot: true, duelist: true, blockMaster: true },
+  // Looks like Richard. Near its target the host freezes, the skull opens and a fencing tongue
+  // comes out; the tongue can't be hurt, the (frozen) body can.
+  parasite: { model: 'richard', hp: 850, cutMul: 1.6, bleedMul: 0.55, kdDmg: 120, kdChance: 0.12, str: 1.35, dual: false, weight: 0.15, parasite: true },
 };
 for (const [k, t] of Object.entries(TYPES)) t.name = k;
 const CUT_DMG = 60, HEAD_CUT_DMG = 120; // decapitation needs a really clean, hard cut
@@ -527,6 +531,7 @@ export class Enemy {
     }
     this.tonus = 1; this.tonusTarget = 1;
     this.buildArmor();
+    if (this.type.parasite) this.tongue = new Tongue(this);
     this.syncMeshes();
 
     // landing marker
@@ -551,6 +556,8 @@ export class Enemy {
     this.stateT += adt; this.atkCd -= adt; this.thinkT -= adt; this.hitCd -= dt; this.clashCd -= dt;
     this.flash = Math.max(0, this.flash - dt * 6);
     // stumps bleed and drain health
+    // a stump on a part that has itself been cut off goes with it
+    if (this.stumps.length) this.stumps = this.stumps.filter(st => !this.lost.has(st.part) && bodyAlive(this.parts[st.part].body));
     if (this.stumps.length) {
       this.bleedT = (this.bleedT || 0) - dt;
       for (const st of this.stumps) {
@@ -567,6 +574,15 @@ export class Enemy {
       }
     }
     if (this.state === 'attack' && !(this.atkSide === 'L' ? this.armed2 : this.armed)) this.setState('stagger', 0.5);
+    if (this.tongue && !['fall', 'land', 'down', 'getup', 'host', 'retract'].includes(this.state)) {
+      // close enough to its target: plant the host and let the tongue out
+      const toBtn = this.state === 'seekButton';
+      const tp = toBtn ? ctx.button.pos : P.head;
+      if (Math.hypot(tp.x - this.root.x, tp.z - this.root.z) < 5) {
+        this.hostTarget = toBtn ? 'button' : 'player'; this.tongueDone = false;
+        this.setState('host'); this.tongue.open(); sfx.splat(); sfx.grunt(0.9, this.voice * 0.7);
+      }
+    }
 
     const toP = tC.set(P.head.x - this.root.x, 0, P.head.z - this.root.z);
     const dist = toP.length();
@@ -734,6 +750,20 @@ export class Enemy {
         }
         break;
       }
+      case 'host': {
+        // the host stands frozen; everything happens in the tongue
+        const tp = this.hostTarget === 'button' ? ctx.button.pos : P.head;
+        desiredYaw = Math.atan2(tp.x - this.root.x, tp.z - this.root.z);
+        handT = [0.22, 1.0, 0.12]; bladeT = [0.05, -0.7, 0.7]; handK = 4; leanF = -0.05; turn = 0.8;
+        const far = Math.hypot(tp.x - this.root.x, tp.z - this.root.z) > 6.5;
+        if (far || this.tongueDone) { this.tongue.close(); this.btnCd = rnd(5, 10); this.setState('retract', 0.7); }
+        break;
+      }
+      case 'retract': {
+        handT = [0.22, 1.0, 0.12]; bladeT = [0.05, -0.7, 0.7]; handK = 4; turn = 0;
+        if (this.stateT >= this.stateDur && !this.tongue.busy) this.setState('approach');
+        break;
+      }
       case 'levitate': {
         crouch = -0.75 - 0.08 * Math.sin(this.stateT * 2.5); // pelvis raised: feet dangle above the floor
         handT = [0.55, 1.6, 0.15]; bladeT = [0.6, 0.6, 0.2]; handK = 6; leanF = -0.12; turn = 1.5;
@@ -882,6 +912,7 @@ export class Enemy {
       else if (!busy && this.state === 'levitate') { this.crippled = false; this.setState('land', 0.45); }
     }
     if (this.revivals.length) this.updateRevivals(dt);
+    if (this.tongue) this.tongue.update(dt, this.hostTarget === 'button' && this.state === 'host' ? 'button' : 'player');
   }
 
   // read the player's blade (predicted ~0.2 s ahead) and block or dodge if it is coming at us
@@ -889,11 +920,12 @@ export class Enemy {
     if (this.thinkT > 0 || !this.armed) return;
     const P = this.ctx.player;
     const duel = this.type.duelist;
-    this.thinkT = duel ? rnd(0.035, 0.08) : rnd(0.1, 0.2); // reaction delay
+    const master = this.type.blockMaster;
+    this.thinkT = master ? rnd(0.02, 0.045) : duel ? rnd(0.035, 0.08) : rnd(0.1, 0.2); // reaction delay
     const pred = tA.copy(P.tip).addScaledVector(P.tipVel, 0.2);
     const chest = this.toWorld(R(0, 1.35, 0), tB);
     const swing = new THREE.Line3(P.tip, pred).closestPointToPoint(chest, true, new THREE.Vector3());
-    if (P.tipVel.length() < 2.5 || swing.distanceTo(chest) > 1.15) return;
+    if (P.tipVel.length() < (master ? 2 : 2.5) || swing.distanceTo(chest) > (master ? 1.4 : 1.15)) return;
     if (duel) {
       // where is that blade going to land? armoured regions are ignored; everything else is guarded
       let near = null, nd = Infinity;
@@ -909,8 +941,8 @@ export class Enemy {
         const d = swing.distanceTo(c);
         if (d < nd) { nd = d; near = part.key; }
       }
-      if (this.type.armor[near]) return;
-      if (Math.random() < 0.93) this.setState('block', 0.3);
+      if (this.type.armor && this.type.armor[near]) return;
+      if (Math.random() < (master ? 0.98 : 0.93)) this.setState('block', master ? 0.4 : 0.3);
       else { this.dodge.copy(toP).normalize().multiplyScalar(-3.2); this.setState('dodge', 0.25); }
       return;
     }
@@ -1197,7 +1229,7 @@ export class Enemy {
     else if (this.wasUnsupported) { this.wasUnsupported = false; if (this.state !== 'down') this.tonusTarget = 1; }
     const dx = pb.x - this.root.x, dz = pb.z - this.root.z, d = Math.hypot(dx, dz);
     if (d > 0.2) { const f = 1 - 0.2 / d; this.root.x += dx * f; this.root.z += dz * f; }
-    if (this.state === 'down' || this.state === 'getup' || this.state === 'land' || this.state === 'leap' || this.state === 'levitate') return;
+    if (this.state === 'down' || this.state === 'getup' || this.state === 'land' || this.state === 'leap' || this.state === 'levitate' || this.state === 'host') return;
     const r = this.parts.chest.body.rotation();
     const up = tB.set(0, 1, 0).applyQuaternion(qA.set(r.x, r.y, r.z, r.w));
     if (pb.y < 0.5 || up.y < 0.3) this.knockDown(rnd(1.0, 1.6));
@@ -1519,7 +1551,7 @@ export class Enemy {
     const imp = body.mass() * Math.min(hit.speed, 10) * 0.35;
     body.applyImpulseAtPoint({ x: hit.dir.x * imp, y: hit.dir.y * imp * 0.5, z: hit.dir.z * imp }, hit.point, true);
     this.tonus *= 0.72;
-    if (this.state === 'fall' || this.state === 'down' || this.state === 'getup') return;
+    if (this.state === 'fall' || this.state === 'down' || this.state === 'getup' || this.state === 'host' || this.state === 'retract') return;
     if (hit.dmg > this.type.kdDmg && Math.random() < this.type.kdChance) this.knockDown(rnd(1.0, 1.6));
     else this.setState('stagger', 0.3 + Math.min(0.3, hit.dmg / 150));
   }
@@ -1527,6 +1559,7 @@ export class Enemy {
   onClash(rel) {
     if (this.dead || this.clashCd > 0) return false;
     this.clashCd = 0.15;
+    if (this.tongue && this.tongue.out) { this.tongue.clashed(); return false; }
     const parried = this.state === 'attack' && ((this.atkPhase === 'strike' && this.stateT < this.strike * 0.8) || (this.atkPhase === 'windup' && this.stateT > this.windup * 0.6));
     if (parried) {
       this.sword.bladeMat.emissive.setRGB(0, 0, 0);
@@ -1691,6 +1724,7 @@ export class Enemy {
     this.dead = true;
     const ctx = this.ctx, w = phys.world;
     this.abortRevivals();
+    if (this.tongue) { this.tongue.destroy(); this.tongue = null; }
     for (const it of this.stitched.slice()) this.unstitch(it);
     if (this.type.regen) {
       // whatever was still crawling back is just debris now
@@ -1749,6 +1783,7 @@ export class Enemy {
 
   destroy() {
     this.abortRevivals();
+    if (this.tongue) { this.tongue.destroy(); this.tongue = null; }
     for (const it of this.stitched) { removeBody(it.entry.body); this.ctx.scene.remove(it.entry.mesh); }
     this.stitched = [];
     // severed limbs and a dropped sword already belong to the pieces list, which clears them

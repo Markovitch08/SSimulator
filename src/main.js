@@ -8,7 +8,7 @@ import { sfx, resumeAudio, loadAlert, setListener, playAlertAt } from './audio.j
 import { settings } from './settings.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '2.6';
+export const VERSION = '2.7';
 loadAlert('sounds/alert.mp3');
 document.getElementById('ver').textContent = 'v' + VERSION;
 document.title = 'Slop Blade v' + VERSION;
@@ -224,16 +224,16 @@ function drawWrist() {
 // ---------------------------------------------------------------- character spawn submenu
 // VR: left Y opens it above the left hand, left stick up/down picks, X spawns. Desktop: keys 1-4.
 // Only between waves.
-const MENU_TYPES = [['richard', 'Richard'], ['andrew', 'Andrew'], ['prisoner', 'Prisoner'], ['pilot', 'Pilot']];
+const MENU_TYPES = [['richard', 'Richard'], ['andrew', 'Andrew'], ['prisoner', 'Prisoner'], ['pilot', 'Pilot'], ['parasite', 'Parasite']];
 const menu = { open: false, sel: 0, prevY: false, prevX: false, latch: false };
-const menuCanvas = document.createElement('canvas'); menuCanvas.width = 512; menuCanvas.height = 320;
+const menuCanvas = document.createElement('canvas'); menuCanvas.width = 512; menuCanvas.height = 380;
 const menuTex = new THREE.CanvasTexture(menuCanvas);
-const spawnMenu = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.125), new THREE.MeshBasicMaterial({ map: menuTex, transparent: true, side: THREE.DoubleSide }));
+const spawnMenu = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.148), new THREE.MeshBasicMaterial({ map: menuTex, transparent: true, side: THREE.DoubleSide }));
 spawnMenu.visible = false;
 function drawMenu() {
   const g = menuCanvas.getContext('2d'), locked = run.phase === 'active';
-  g.clearRect(0, 0, 512, 320);
-  g.fillStyle = 'rgba(20,24,30,.88)'; g.fillRect(0, 0, 512, 320);
+  g.clearRect(0, 0, 512, 380);
+  g.fillStyle = 'rgba(20,24,30,.88)'; g.fillRect(0, 0, 512, 380);
   g.fillStyle = '#fff'; g.font = 'bold 30px system-ui'; g.fillText('SPAWN', 24, 44);
   g.font = '19px system-ui'; g.fillStyle = locked ? '#ff6a6a' : '#fff9';
   g.fillText(locked ? 'locked while a wave is running' : 'stick: choose · X: spawn · Y: close', 130, 42);
@@ -265,7 +265,7 @@ function updateSpawnMenu() {
   menu.prevX = x;
 }
 addEventListener('keydown', e => {
-  const i = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
+  const i = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'].indexOf(e.code);
   if (i >= 0 && !e.repeat) spawnFromMenu(i);
 });
 
@@ -463,7 +463,7 @@ const ctx = {
 let best = 0;
 try { best = +localStorage.getItem('slopblade.best') || 0; } catch { /* no storage */ }
 const run = { wave: 0, phase: 'intro', t: 5, queue: [], spawnT: 0, score: 0, streak: 0, streakT: 0, best };
-const KILL_PTS = { richard: 100, andrew: 220, prisoner: 450, pilot: 350 };
+const KILL_PTS = { richard: 100, andrew: 220, prisoner: 450, pilot: 350, parasite: 280 };
 
 function waveRoster(n) {
   const list = [];
@@ -471,7 +471,8 @@ function waveRoster(n) {
     const r = Math.random();
     if (n >= 5 && r < 0.14) list.push('prisoner');
     else if (n >= 4 && r < 0.26 && TYPES.pilot) list.push('pilot');
-    else if (n >= 3 && r < 0.5) list.push('andrew');
+    else if (n >= 3 && r < 0.38 && TYPES.parasite) list.push('parasite');
+    else if (n >= 3 && r < 0.55) list.push('andrew');
     else list.push('richard');
   }
   return list;
