@@ -9,7 +9,7 @@ import { settings } from './settings.js';
 import { Revolver } from './revolver.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '4.1';
+export const VERSION = '4.2';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
 loadSound('gunshot', 'sounds/gunshot.mp3');
@@ -1130,10 +1130,12 @@ function swordHolster() { // grip just behind the right shoulder, blade down acr
   const blade = new THREE.Vector3(0, -0.85, 0).addScaledVector(r, -0.5).addScaledVector(f, -0.05).normalize();
   return { p, q: basisQuat(blade, f.clone().negate()) };
 }
-function gunHolster() { // right hip, barrel down, sights facing forward
+function gunHolster() { // cross draw: front left of the belt, butt pointing at the buckle, barrel canted back
   const { f, r, head } = bodyFrame();
-  const p = head.clone().addScaledVector(r, 0.08).addScaledVector(f, 0.13).add(new THREE.Vector3(0, -0.7, 0));
-  const z = new THREE.Vector3(0, 1, 0), y = f.clone(), x = new THREE.Vector3().crossVectors(y, z);
+  const p = head.clone().addScaledVector(r, -0.12).addScaledVector(f, 0.12).add(new THREE.Vector3(0, -0.7, 0));
+  const z = new THREE.Vector3(0, 1, 0).addScaledVector(r, 0.45).normalize(); // grip end leans toward the buckle
+  const y = r.clone().negate().addScaledVector(z, -r.clone().negate().dot(z)).normalize(); // sights face away from the buckle, so the butt faces it
+  const x = new THREE.Vector3().crossVectors(y, z); // -X lies against the body
   return { p, q: new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z)) };
 }
 
