@@ -9,7 +9,7 @@ import { settings } from './settings.js';
 import { Revolver } from './revolver.js';
 
 // Game version shown in the HUD, the VR wrist panel and the tab title.
-export const VERSION = '4.0';
+export const VERSION = '4.1';
 loadAlert('sounds/alert.mp3');
 loadSound('tongue', 'sounds/tongue.mp3');
 loadSound('gunshot', 'sounds/gunshot.mp3');
@@ -1214,7 +1214,8 @@ function updateEquipment(dt) {
   const gh = gunHolster(); holsterMesh.position.copy(gh.p); holsterMesh.quaternion.copy(gh.q);
   const sh = swordHolster(); scabbardMesh.position.copy(sh.p); scabbardMesh.quaternion.copy(sh.q).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI, 0, 0)));
   const vis = renderer.xr.isPresenting || !!window.game?.handOverride;
-  holsterMesh.visible = scabbardMesh.visible = vis;
+  holsterMesh.visible = vis;
+  scabbardMesh.visible = false; // the back sheath is invisible: the sword just hangs there
 }
 // desktop: G draws/holsters the gun, left click = trigger, C cocks, R reloads, H sword
 addEventListener('keydown', e => {
