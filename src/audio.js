@@ -144,6 +144,8 @@ export const sfx = {
   },
   // rising arpeggio for kills; higher with a bigger streak multiplier
   chime(mult = 1) { if (!ok()) return; const t = ctx.currentTime; const base = 520 * Math.pow(1.12, mult - 1); [0, 0.06, 0.12].forEach((d, i) => tone(t + d, base * [1, 1.26, 1.5][i], base * [1, 1.26, 1.5][i], 0.18, 0.16, 'triangle')); },
+  // boxing bell: a few inharmonic partials with a long ring
+  bell() { if (!ok()) return; const t = ctx.currentTime; [[830, 0.22], [1990, 0.1], [2710, 0.07], [415, 0.08]].forEach(([f, g]) => tone(t, f, f * 0.995, 1.6, g, 'sine')); },
   fanfare() { if (!ok()) return; const t = ctx.currentTime; [0, 0.12, 0.24, 0.4].forEach((d, i) => tone(t + d, [392, 494, 587, 784][i], [392, 494, 587, 784][i], 0.35, 0.2, 'square')); },
   heal() { if (!ok()) return; const t = ctx.currentTime; tone(t, 660, 1320, 0.25, 0.12, 'sine'); },
   // digital stutter for simulation glitches

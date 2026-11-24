@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slop Boxing</title>
+<style>
+:root{--bg:#dde1e6;--ink:#1d2229;--accent:#d41f3a;--panel:rgba(255,255,255,.72)}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:system-ui,sans-serif}
+canvas{display:block}
+#hud{position:fixed;top:12px;left:12px;display:flex;flex-direction:column;gap:8px;pointer-events:none;max-width:calc(100vw - 24px)}
+.panel{background:var(--panel);backdrop-filter:blur(6px);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.45}
+#help{font-size:12px;opacity:.85;pointer-events:auto}
+#help a{color:inherit}
+#loading{position:fixed;inset:0;display:grid;place-items:center;font:600 16px system-ui}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "@dimforge/rapier3d-compat": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.14.0/rapier.es.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="loading">Lacing up…</div>
+<div id="hud">
+  <div class="panel"><b id="ver" style="float:right;margin-left:16px;opacity:.6"></b><b>Slop Boxing</b> · HP <span id="hp">100</span></div>
+  <div class="panel" id="help">
+    <b>VR:</b> put the controllers down to box with your bare hands (hand tracking), or use controllers. Make a fist to hit hard; an open hand only slaps. His glove glows before he throws: block it with your fists, or slip/duck where your head was. Hit him while his guard is down. Bump your fists together to restart after a knockdown.<br>
+    <b>Desktop:</b> left/right click = left/right punch at the cursor (or J/K) · Q/E = slip · C = duck · R = restart after a knockdown<br>
+    <a href="../">← back to Slop Blade</a>
+  </div>
+</div>
+<script type="module" src="boxing.js"></script>
+</body>
+</html>
