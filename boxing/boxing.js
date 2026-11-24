@@ -5,13 +5,13 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
-import { RAPIER, FIXED, phys, initPhysics, GROUPS, bodyAlive } from '../src/physics.js';
+import { RAPIER, FIXED, phys, initPhysics, GROUPS, G, grp, bodyAlive } from '../src/physics.js';
 import { facet, lambert, basisQuat } from '../src/lowpoly.js';
 import { Particles } from '../src/fx.js';
 import { sfx, resumeAudio } from '../src/audio.js';
 import { loadEnemyModel } from '../src/enemy.js';
 
-export const VERSION = 'boxing 0.2';
+export const VERSION = 'boxing 0.3';
 
 // ---------------------------------------------------------------- renderer / scene
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -169,6 +169,7 @@ const fists = ['left', 'right'].map(side => {
     target: V3(), targetQ: new THREE.Quaternion(), valid: false, closed: true, teleport: true,
     last: V3(), lastVel: V3(), lostT: 0, source: 'none',
     armed: true, punch: null, // punch counting / classification
+    kf: { p: V3(), v: V3(), a: V3(), init: false }, lostFrom: null, lastMeasured: V3(), intent: null, sweepFrom: V3(), hitFrame: -1,
     desk: { t: 1, aim: V3() },  // desktop punch animation
   };
 });
@@ -193,21 +194,84 @@ const grips = [0, 1].map(i => {
 });
 const TIPS = ['index-finger-tip', 'middle-finger-tip', 'ring-finger-tip', 'pinky-finger-tip'];
 
+// ---- hand tracking, made to survive fast punches
+// 1. a constant-acceleration (alpha-beta-gamma) filter per fist: smooths jitter, rejects glitch
+//    jumps, and keeps predicting along speed + acceleration through frames where tracking drops
+// 2. when a hand reappears after a dropout far from where it vanished, the gap was a punch:
+//    it's scored from the distance covered over the time lost ("intent")
+// 3. the whole path since last frame is swept for hits (sweepFists), not just where the fist is
+// 4. if the knuckles drop out, fall back to the palm, then to the wrist, projected along the hand
+const KF = { a: 0.85, b: 0.55, g: 0.12 };
+const tmpQ = new THREE.Quaternion();
+function jointAt(hand, name) { const j = hand?.joints?.[name]; return j && j.visible ? j : null; }
+function measureHand(f) {
+  const feed = window.boxing?.handFeed?.[f.side]; // test hook: (time) => position or null
+  if (feed) { const p = feed(performance.now()); return p ? { pos: p.clone(), q: camera.getWorldQuaternion(new THREE.Quaternion()), closed: true } : null; }
+  const hand = hands.find(h => h.userData.side === f.side);
+  if (!hand) return null;
+  const kn = jointAt(hand, 'middle-finger-phalanx-proximal'), mc = jointAt(hand, 'middle-finger-metacarpal'), wr = jointAt(hand, 'wrist');
+  if (!kn && !mc && !wr) return null;
+  const qj = wr || mc || kn, q = qj.getWorldQuaternion(new THREE.Quaternion());
+  let pos;
+  if (kn) pos = kn.getWorldPosition(V3());
+  else { // a joint's -Z runs along the bone toward the fingertips
+    const j = mc || wr, along = mc ? 0.045 : 0.085;
+    pos = j.getWorldPosition(V3()).add(V3(0, 0, -along).applyQuaternion(j.getWorldQuaternion(tmpQ)));
+  }
+  let closed = f.closed;
+  if (mc) {
+    const pc = mc.getWorldPosition(V3());
+    let d = 0, n = 0;
+    for (const t of TIPS) { const j = jointAt(hand, t); if (j) { d += j.getWorldPosition(V3()).distanceTo(pc); n++; } }
+    if (n >= 2) closed = d / n < 0.075; // fingertips curled in near the palm
+  }
+  return { pos, q, closed };
+}
+function trackHandFiltered(f, dt) {
+  const k = f.kf, m = measureHand(f);
+  if (!k.init) {
+    if (!m) return false;
+    k.p.copy(m.pos); k.v.set(0, 0, 0); k.a.set(0, 0, 0); k.init = true; f.lastMeasured.copy(m.pos);
+  }
+  // predict
+  k.p.addScaledVector(k.v, dt).addScaledVector(k.a, 0.5 * dt * dt); k.v.addScaledVector(k.a, dt);
+  let meas = m;
+  if (meas && f.lostT < 0.1 && meas.pos.distanceTo(k.p) > 0.5) meas = null; // a glitch, not a hand
+  if (meas) {
+    if (f.lostFrom && f.lostT > 0.03) {
+      const disp = meas.pos.clone().sub(f.lostFrom), el = f.lostT;
+      const reach = meas.pos.distanceTo(player.head);
+      if (disp.length() > 0.2 && disp.length() / el > 2.5 && reach > 0.4) f.intent = { vel: disp.divideScalar(el), pos: meas.pos.clone(), from: f.lostFrom.clone() };
+    }
+    const r = meas.pos.clone().sub(k.p), h = Math.max(dt, 1 / 240);
+    k.p.addScaledVector(r, KF.a); k.v.addScaledVector(r, KF.b / h); k.a.addScaledVector(r, 2 * KF.g / (h * h));
+    if (k.v.length() > 20) k.v.setLength(20);
+    if (k.a.length() > 300) k.a.setLength(300);
+    f.lastMeasured.copy(meas.pos); f.lostT = 0; f.lostFrom = null;
+    f.targetQ.copy(meas.q); f.closed = meas.closed;
+    f.target.copy(k.p);
+    return true;
+  }
+  if (f.lostT >= 0.25) { k.init = false; f.lostFrom = null; return false; }
+  // lost: coast on, easing off, and never further than an arm's length from your head
+  if (!f.lostFrom) f.lostFrom = f.lastMeasured.clone();
+  f.lostT += dt;
+  k.a.multiplyScalar(Math.exp(-10 * dt)); k.v.multiplyScalar(Math.exp(-3 * dt));
+  const off = k.p.clone().sub(player.head);
+  if (off.length() > 0.85) { off.setLength(0.85); k.p.copy(player.head).add(off); k.v.addScaledVector(off.normalize(), -Math.max(0, k.v.dot(off))); }
+  f.target.copy(k.p);
+  return true;
+}
+
 function trackFists(dt) {
   const xr = renderer.xr.isPresenting;
   for (const f of fists) {
+    f.sweepFrom.copy(f.valid ? f.target : f.sweepFrom);
     let got = false;
-    if (xr) {
-      const hand = hands.find(h => h.userData.side === f.side);
-      const knuckle = hand?.joints?.['middle-finger-phalanx-proximal'], wrist = hand?.joints?.wrist, palm = hand?.joints?.['middle-finger-metacarpal'];
-      if (knuckle && wrist && palm && knuckle.visible && wrist.visible) {
-        knuckle.getWorldPosition(f.target); wrist.getWorldQuaternion(f.targetQ);
-        const pc = palm.getWorldPosition(V3());
-        let d = 0, n = 0;
-        for (const t of TIPS) { const j = hand.joints[t]; if (j && j.visible) { d += j.getWorldPosition(V3()).distanceTo(pc); n++; } }
-        f.closed = n === 0 || d / n < 0.075; // fingertips curled in near the palm
-        f.source = 'hand'; got = true;
-      } else {
+    if (xr || window.boxing?.handFeed?.[f.side]) {
+      got = trackHandFiltered(f, dt);
+      if (got) f.source = f.lostT > 0 ? 'hand (predicted)' : 'hand';
+      if (!got && xr) {
         const g = grips.find(c => c.userData.side === f.side && !c.userData.isHand);
         if (g && g.userData.gamepad) {
           g.getWorldPosition(f.target); g.getWorldQuaternion(f.targetQ);
@@ -216,17 +280,10 @@ function trackFists(dt) {
         }
       }
     } else { deskFist(f, dt); got = true; f.source = 'desktop'; }
-    if (got) {
-      if (f.valid && dt > 0 && !f.teleport) f.lastVel.lerp(V3().subVectors(f.target, f.last).divideScalar(dt), 0.6);
-      f.last.copy(f.target); f.lostT = 0; f.valid = true;
-    } else if (f.valid && f.lostT < 0.2) {
-      // tracking dropped (usually a fast punch blurring past the cameras): carry on along the
-      // last velocity, easing off, so the punch still lands where it was going
-      f.lostT += dt; f.lastVel.multiplyScalar(Math.exp(-6 * dt));
-      f.last.addScaledVector(f.lastVel, dt); f.target.copy(f.last);
-    } else f.valid = false;
+    if (f.intent) f.sweepFrom.copy(f.intent.from);
+    f.valid = got;
     if (f.teleport && f.valid) { // after moving between hub and ring: jump there instead of flying
-      f.body.setTranslation(f.target, true); f.body.setLinvel({ x: 0, y: 0, z: 0 }, true); f.lastVel.set(0, 0, 0); f.teleport = false;
+      f.body.setTranslation(f.target, true); f.body.setLinvel({ x: 0, y: 0, z: 0 }, true); f.sweepFrom.copy(f.target); f.teleport = false;
     }
   }
 }
@@ -624,30 +681,64 @@ function ik2(root, goal, a, b, hint) {
 }
 
 // ---------------------------------------------------------------- fists hitting boxers
+let frameNo = 0;
+// one place that turns "fist met boxer part" into a block or a hit
+function fistHit(f, info, pt, v, sp) {
+  const bx = info.boxer;
+  if (info.glove && bx.atk && bx.atk.phase === 'strike' && 'lArm' + bx.atk.side === info.part) { bx.blocked(); pulse(f.side, 0.6, 50); f.hitFrame = frameNo; return; }
+  if (sp < 2) return;
+  const dmg = bx.takeHit(info.part, pt, v.clone().normalize(), sp, f, !!info.glove);
+  if (dmg <= 0) return;
+  f.hitFrame = frameNo;
+  if (f.punch) f.punch.hit = { boxer: bx, dmg, part: info.part };
+  pulse(f.side, 0.4 + dmg / 30, 30 + dmg * 2);
+  hitStop = Math.min(0.06, 0.015 + dmg * 0.0015);
+  if (bx.mode === 'fight') {
+    stats.landed++; stats.dmg += dmg; combo.n++; combo.t = 1.6; combo.best = Math.max(combo.best, combo.n);
+    if (combo.n >= 3) popup(combo.n + ' HIT COMBO', pt.clone().add(V3(0, 0.25, 0)), '#f0a020');
+  }
+}
+// how fast the punch really is: for tracked hands the filtered hand (or a dropout's intent),
+// not the physics fist, which can overshoot while catching up
+function punchVel(f) {
+  if (f.source.startsWith('hand')) return f.intent && f.intent.vel.length() > f.kf.v.length() ? f.intent.vel.clone() : f.kf.v.clone();
+  const lv = f.body.linvel(); return V3(lv.x, lv.y, lv.z);
+}
 function processFistContacts() {
   for (const f of fists) {
-    const lv = f.body.linvel(), v = V3(lv.x, lv.y, lv.z);
+    const v = punchVel(f);
     world.contactPairsWith(f.col, other => {
       const info = phys.info.get(other.handle);
       if (!info || info.kind !== 'boxer') return;
       let pt = null;
       world.contactPair(f.col, other, m => { if (!pt && m.numSolverContacts() > 0) { const p = m.solverContactPoint(0); pt = V3(p.x, p.y, p.z); } });
-      if (!pt) return;
-      const bx = info.boxer;
-      if (info.glove && bx.atk && bx.atk.phase === 'strike' && 'lArm' + bx.atk.side === info.part) { bx.blocked(); pulse(f.side, 0.6, 50); return; }
-      const sp = v.length();
-      if (sp < 2) return;
-      const dmg = bx.takeHit(info.part, pt, v.clone().normalize(), sp, f, !!info.glove);
-      if (dmg > 0) {
-        if (f.punch) f.punch.hit = { boxer: bx, dmg, part: info.part };
-        pulse(f.side, 0.4 + dmg / 30, 30 + dmg * 2);
-        hitStop = Math.min(0.06, 0.015 + dmg * 0.0015);
-        if (bx.mode === 'fight') {
-          stats.landed++; stats.dmg += dmg; combo.n++; combo.t = 1.6; combo.best = Math.max(combo.best, combo.n);
-          if (combo.n >= 3) popup(combo.n + ' HIT COMBO', pt.clone().add(V3(0, 0.25, 0)), '#f0a020');
-        }
-      }
+      if (pt) fistHit(f, info, pt, v, v.length());
     });
+  }
+}
+// swept hits: the tracked path since last frame (or across a dropout) is ray-cast against the
+// boxers, three rays wide, so a fast fist can't pass through a head between two samples
+const FIST_SWEEP = grp(G.PHAND, G.EALIVE);
+function sweepFists(dt) {
+  for (const f of fists) {
+    if (!f.valid || f.hitFrame === frameNo) continue;
+    const seg = f.target.clone().sub(f.sweepFrom), len = seg.length();
+    if (len < 0.03) continue;
+    const sp = f.source.startsWith('hand') ? punchVel(f).length() : len / Math.max(dt, 1 / 120);
+    if (sp < 2.5) continue;
+    const dir = seg.clone().normalize();
+    const side = Math.abs(dir.y) < 0.9 ? V3().crossVectors(dir, UP).normalize() : V3(1, 0, 0);
+    const upv = V3().crossVectors(side, dir);
+    let best = null;
+    for (const off of [V3(), side.clone().multiplyScalar(0.04), upv.clone().multiplyScalar(-0.04)]) {
+      const o = f.sweepFrom.clone().add(off);
+      const hit = world.castRay(new RAPIER.Ray(o, dir), len, true, undefined, FIST_SWEEP);
+      if (hit && (!best || hit.timeOfImpact < best.toi)) best = { toi: hit.timeOfImpact, col: hit.collider, o };
+    }
+    if (!best) continue;
+    const info = phys.info.get(best.col.handle);
+    if (!info || info.kind !== 'boxer') continue;
+    fistHit(f, info, best.o.clone().addScaledVector(dir, best.toi), dir.clone().multiplyScalar(sp), sp);
   }
 }
 
@@ -713,9 +804,14 @@ function trackPunches(dt) {
   if (game.state === 'fight' || game.state === 'rest' || mode === 'hub') stats.time += dt;
   for (const f of fists) {
     if (!f.valid) { f.punch = null; f.armed = true; continue; }
-    const st = f.step || { sp: 0, vel: V3(), pos: readPos(f.body) }; f.step = null;
+    let st = f.step || { sp: 0, vel: V3(), pos: readPos(f.body) }; f.step = null;
+    // tracked hands: the filtered hand velocity, not the physics fist chasing it (that overshoots)
+    if (f.source.startsWith('hand')) st = { sp: f.kf.v.length(), vel: f.kf.v.clone(), pos: f.target.clone() };
+    if (f.intent) { const isp = f.intent.vel.length(); if (isp > st.sp) st = { sp: isp, vel: f.intent.vel.clone(), pos: f.intent.pos.clone() }; f.intent = null; } // a punch the cameras lost mid-flight
     const sp = st.sp;
-    if (f.armed && sp > 2.5) { f.armed = false; f.punch = { peak: sp, vel: st.vel, pos: st.pos, head: player.head.clone() }; stats.thrown++; }
+    // only a fist moving away from your head starts a punch (pulling back to guard isn't one)
+    const outward = sp > 0 && st.vel.dot(st.pos.clone().sub(player.head).normalize()) > 0.3 * sp;
+    if (f.armed && sp > 2.5 && outward) { f.armed = false; f.punch = { peak: sp, vel: st.vel, pos: st.pos, head: player.head.clone() }; stats.thrown++; }
     if (!f.armed && f.punch) {
       if (sp > f.punch.peak) { f.punch.peak = sp; f.punch.vel = st.vel; f.punch.pos = st.pos; }
       if (sp < 1.4) {
@@ -1024,8 +1120,10 @@ renderer.setAnimationLoop(() => {
       if (!f.step || sp > f.step.sp) f.step = { sp, vel: V3(lv.x, lv.y, lv.z), pos: readPos(f.body) };
     }
   }
+  sweepFists(dt);
   updateGame(dt);
   trackPunches(dt);
+  frameNo++;
   updatePads(dt);
   for (const f of fists) {
     f.mesh.visible = f.valid && f.source !== 'hand'; // tracked hands draw themselves
