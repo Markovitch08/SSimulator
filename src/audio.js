@@ -192,7 +192,7 @@ export const gunSfx = {
   open() { click(700, 0.25, 0.04); },
   close() { click(1000, 0.3, 0.03); },
   ejector() { click(600, 0.2, 0.06); },
-  insert() { click(1600, 0.12, 0.02); },
+  insert(v = 0.12) { click(1600, v, 0.02); },
   ratchet() { click(2200, 0.06, 0.012); },
   detent() { click(1400, 0.18, 0.02); },
   holster() { if (!ok()) return; const t = ctx.currentTime; nz(t, 0.12, 'lowpass', 500, 150, 0.7, 0.5, master); },

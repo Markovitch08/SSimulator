@@ -360,7 +360,7 @@ export const TYPES = {
   pilot: { model: 'pilot', hp: 650, cutMul: 1.2, bleedMul: 0.8, kdDmg: 100, kdChance: 0.15, str: 1.25, dual: false, weight: 0.17, walk: 1.7, pilot: true, duelist: true, blockMaster: true },
   // Looks like Richard. Near its target the host freezes, the skull opens and a fencing tongue
   // comes out; the tongue can't be hurt, the (frozen) body can.
-  parasite: { model: 'richard', hp: 680, cutMul: 1.6, bleedMul: 0.55, kdDmg: 120, kdChance: 0.12, str: 1.35, dual: false, weight: 0.12, parasite: true },
+  parasite: { model: 'richard', hp: 500, cutMul: 1, bleedMul: 1, kdDmg: 75, kdChance: 0.25, str: 1.35, dual: false, weight: 0.12, parasite: true },
 };
 for (const [k, t] of Object.entries(TYPES)) t.name = k;
 const CUT_DMG = 60, HEAD_CUT_DMG = 120;
