@@ -12,7 +12,7 @@ import { Particles } from '../src/fx.js';
 import { sfx, resumeAudio } from '../src/audio.js';
 import { loadEnemyModel } from '../src/enemy.js';
 
-export const VERSION = 'boxing 0.4';
+export const VERSION = 'boxing 0.5';
 
 // ---------------------------------------------------------------- renderer / scene: a dark arena
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -207,13 +207,14 @@ const body = { eye: 1.65, measuring: 0, samples: [] };
 const heightFromEye = eye => clamp(eye / 0.935, 1.35, 2.15);
 
 // ---------------------------------------------------------------- player: head + two kinematic fists
-// Fists are kinematic: they go exactly where your hands are every physics step (no lag, no
-// float) and shove whatever they meet. Hits are judged from the tracked hand's own speed.
+// Fists are kinematic sensors: they go exactly where your hands are every physics step (no lag,
+// no float) and only detect what they touch; the push a hit gives is applied by hand, scaled to
+// the hit (an unstoppable kinematic fist would launch the ragdoll across the ring).
 const player = { hp: 100, head: V3(0, 1.65, 0), standY: 1.65, flash: 0, dizzy: 0, down: false, knockdowns: 0 };
 const FIST_HALF = [0.045, 0.045, 0.055];
 const fists = ['left', 'right'].map(side => {
   const b = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(side === 'left' ? -0.2 : 0.2, 1.3, -0.3));
-  const col = world.createCollider(RAPIER.ColliderDesc.cuboid(...FIST_HALF).setFriction(0.8).setCollisionGroups(GROUPS.phand), b);
+  const col = world.createCollider(RAPIER.ColliderDesc.cuboid(...FIST_HALF).setSensor(true).setCollisionGroups(GROUPS.phand), b);
   phys.info.set(col.handle, { kind: 'fist', side });
   const mesh = new THREE.Mesh(facet(new THREE.IcosahedronGeometry(0.055, 1)), lambert(side === 'left' ? 0x2a5bd7 : 0xd41f3a));
   mesh.castShadow = true; scene.add(mesh);
@@ -408,7 +409,7 @@ try { Object.assign(save, JSON.parse(localStorage.getItem('slopBoxing') || '{}')
 const persist = () => { try { localStorage.setItem('slopBoxing', JSON.stringify(save)); } catch (e) {} };
 
 // ---------------------------------------------------------------- the boxer: an active ragdoll
-const MULT = { pelvis: 0.6, chest: 1.0, head: 1.15, uArmL: 0.15, uArmR: 0.15, lArmL: 0.08, lArmR: 0.08, thighL: 0.3, thighR: 0.3, shinL: 0.25, shinR: 0.25 };
+const MULT = { pelvis: 0.6, chest: 0.85, head: 1.0, uArmL: 0.15, uArmR: 0.15, lArmL: 0.08, lArmR: 0.08, thighL: 0.3, thighR: 0.3, shinL: 0.25, shinR: 0.25 };
 const JOINTS = [['pelvis', 'chest', 'chest'], ['chest', 'head', 'head'], ['chest', 'uArmL', 'uArmL'], ['uArmL', 'lArmL', 'lArmL'], ['chest', 'uArmR', 'uArmR'], ['uArmR', 'lArmR', 'lArmR'],
   ['pelvis', 'thighL', 'thighL'], ['thighL', 'shinL', 'shinL'], ['pelvis', 'thighR', 'thighR'], ['thighR', 'shinR', 'shinR']];
 const GLOVE_R = 0.075;
@@ -421,7 +422,7 @@ class Boxer {
     const s = k => clamp(opp[k] * (k === 'chin' ? this.dk : lerp(1, this.dk, 0.8)), 0, 1.8);
     this.st = { chin: s('chin'), power: s('power'), speed: s('speed'), block: s('block'), dodge: s('dodge'), aggr: s('aggr'), feet: s('feet'), counter: s('counter'), combo: opp.combo };
     if (mode === 'coach') Object.assign(this.st, { speed: 0.2, power: 0.3 });
-    this.maxHp = 240 * this.st.chin; this.hp = this.maxHp;
+    this.maxHp = 200 * this.st.chin; this.hp = this.maxHp; // ~25-35 clean hits, fewer with weak spots and knockdowns
     this.base = at.clone(); this.home = at.clone(); this.yaw = yaw;
     this.f = V3(Math.sin(yaw), 0, Math.cos(yaw)); this.r = V3(-this.f.z, 0, this.f.x);
     this.tonus = 1; this.state = mode === 'fight' ? 'walkin' : 'guard'; this.t = 0; this.next = rnd(1.5, 2.5); this.hitCd = 0;
@@ -549,6 +550,7 @@ class Boxer {
   think(dt, ph) {
     this.t += dt; this.weave += dt * (this.state === 'guard' ? 1.6 : 0.8);
     this.hitCd -= dt; this.flash = Math.max(0, this.flash - dt * 5);
+    if (this.state !== 'dizzy') this.dizzy = Math.max(0, this.dizzy - dt * 2.5); // dazing takes hits in quick succession
     this.cover = Math.max(0, this.cover - dt); this.retreatT = Math.max(0, this.retreatT - dt); this.counterWin = Math.max(0, this.counterWin - dt);
     if (this.state === 'down' || this.state === 'ko') { this.tonus = 0; this.downT += dt; return; }
     if (this.state === 'getup') { // muscles come back; the target pose rises from a crouch
@@ -770,57 +772,60 @@ class Boxer {
     let zone = part.startsWith('lArm') || part.startsWith('uArm') ? 'arm' : part.startsWith('thigh') || part.startsWith('shin') ? 'leg' : part === 'pelvis' ? 'low' : part === 'chest' ? 'body' : 'head', mult = MULT[part], weak = null;
     if (isGlove) { zone = 'glove'; mult = 0.05; }
     if (part === 'head') {
-      if (local.y < 0.08 && local.z > 0.02) { weak = 'CHIN'; mult *= 1.45 + (ldir.y > 0.4 || ldir.z < -0.6 ? 0.25 : 0); }
-      else if (Math.abs(local.x) > 0.055 && local.y > 0.06) { weak = 'TEMPLE'; mult *= 1.25 + (Math.abs(ldir.x) > 0.5 ? 0.2 : 0); }
+      if (local.y < 0.08 && local.z > 0.02) { weak = 'CHIN'; mult *= 1.3 + (ldir.y > 0.4 || ldir.z < -0.6 ? 0.15 : 0); }
+      else if (Math.abs(local.x) > 0.055 && local.y > 0.06) { weak = 'TEMPLE'; mult *= 1.2 + (Math.abs(ldir.x) > 0.5 ? 0.1 : 0); }
     } else if (part === 'chest') {
-      if (local.y < 0.12 && local.x < -0.04) { weak = 'LIVER'; mult *= 1.35 + (Math.abs(ldir.x) > 0.4 ? 0.2 : 0); }
+      if (local.y < 0.12 && local.x < -0.04) { weak = 'LIVER'; mult *= 1.25 + (Math.abs(ldir.x) > 0.4 ? 0.15 : 0); }
       else if (local.y < 0.15 && Math.abs(local.x) < 0.06 && local.z > 0) { weak = 'SOLAR PLEXUS'; mult *= 1.2; }
     }
     if (speed < 3) return { dmg: 0, zone, weak, tier: zone === 'glove' ? 'block' : 'light' };
-    const build = zone === 'head' ? Math.exp(this.trauma / 220) : zone === 'body' ? Math.exp(this.pain / 220) : 1;
-    const dmg = Math.min(60, (speed - 2.5) * 6) * mult * build * (fist.closed ? 1 : 0.35) / Math.max(0.4, this.st.chin);
-    const tier = zone === 'glove' ? 'block' : dmg < 6 ? 'light' : dmg < 16 ? 'solid' : dmg < 28 ? 'heavy' : 'huge';
+    // a typical real punch (5-7 m/s) does 4-9; it tops out at 10 before weak-spot bonuses
+    const build = zone === 'head' ? Math.exp(this.trauma / 300) : zone === 'body' ? Math.exp(this.pain / 300) : 1;
+    // chin softens or toughens every hit, but a glass jaw only takes up to ~25% extra
+    const dmg = Math.min(10, (speed - 3) * 2.2) * mult * build * (fist.closed ? 1 : 0.35) / lerp(1, Math.max(0.4, this.st.chin), 0.6);
+    const tier = zone === 'glove' ? 'block' : dmg < 3 ? 'light' : dmg < 7 ? 'solid' : dmg < 10.5 ? 'heavy' : 'huge';
     return { dmg, zone, weak, tier };
   }
   takeHit(part, pt, dir, speed, fist, isGlove) {
     if (!this.standing || this.hitCd > 0 || this.state === 'rest') return null;
     const res = this.assess(part, pt, dir, speed, fist, isGlove);
-    this.hitCd = 0.1;
+    this.hitCd = 0.2; // one hit per punch, however many steps the fist overlaps him
     const b = this.parts[part].body;
-    if (bodyAlive(b)) b.applyImpulseAtPoint(dir.clone().normalize().multiplyScalar(2 + Math.min(40, res.dmg) * 0.45), pt, true);
+    if (bodyAlive(b)) b.applyImpulseAtPoint(dir.clone().normalize().multiplyScalar(Math.min(4.5, 0.8 + res.dmg * 0.3)), pt, true); // a snap, not a launch
     impact(pt, res.tier, res.weak && res.dmg >= 6 ? res.weak : null);
     if (res.tier === 'block' || res.dmg < 1) { if (res.tier === 'block') sfx.thump(0.4); return res; }
-    this.flash = Math.min(1, res.dmg / 20);
-    sfx.hit(Math.min(1, res.dmg / 25)); if (res.dmg > 8) sfx.grunt(Math.min(1, res.dmg / 30), 0.9);
-    particles.emit('spark', pt, dir.clone().normalize(), 3 + Math.round(res.dmg / 4), 2);
+    this.flash = Math.min(1, res.dmg / 10);
+    sfx.hit(Math.min(1, res.dmg / 12)); if (res.dmg > 5) sfx.grunt(Math.min(1, res.dmg / 14), 0.9);
+    particles.emit('spark', pt, dir.clone().normalize(), 3 + Math.round(res.dmg / 2), 2);
     if (this.mode !== 'fight') return res; // dummy / coach never go down
     this.hp -= res.dmg; roundLog.player += res.dmg;
     if (res.zone === 'head') this.trauma += res.dmg; else if (res.zone === 'body') this.pain += res.dmg;
-    this.tonus = Math.max(0.25, this.tonus - res.dmg * 0.02);
-    if (this.atk?.phase === 'wind' && res.dmg > 5) { this.cancelAttack(); this.next = rnd(0.5, 0.9); popup('INTERRUPTED', pt, '#1f9a4a'); }
-    cheer(res.dmg / 60);
+    this.tonus = Math.max(0.4, this.tonus - res.dmg * 0.035);
+    if (this.atk?.phase === 'wind' && res.dmg > 4) { this.cancelAttack(); this.next = rnd(0.5, 0.9); popup('INTERRUPTED', pt, '#1f9a4a'); }
+    cheer(res.dmg / 25);
     // knockdown: a huge clean shot, any solid shot while dazed, or nothing left in the tank
     const clean = res.weak === 'CHIN' || res.weak === 'TEMPLE' || res.weak === 'LIVER';
-    if ((res.dmg >= 30 && clean) || (this.state === 'dizzy' && res.dmg >= 12) || (this.hp <= 0 && res.dmg >= 8)) { this.knockDown(res, dir); return res; }
-    if (res.zone === 'head' && res.dmg > 14) { this.dizzy += res.dmg - 14; if (this.dizzy > 16) { this.state = 'dizzy'; this.dizzyT = rnd(2.5, 4); this.cancelAttack(); popup('DAZED', this.headPos().add(V3(0, 0.3, 0)), '#f0c020'); } }
-    if (res.zone === 'body' && res.dmg > 18 && res.weak) { this.state = 'hurt'; this.hurtT = 1.2; this.cancelAttack(); sfx.grunt(1, 0.8); }
+    // a one-punch knockdown needs a huge clean shot on a head (or body) that's already taken a beating
+    if ((res.dmg >= 12 && clean && (this.trauma > 80 || this.pain > 80)) || (this.state === 'dizzy' && res.dmg >= 8) || (this.hp <= 0 && res.dmg >= 5)) { this.knockDown(res, dir); return res; }
+    if (res.zone === 'head' && res.dmg > 8) { this.dizzy += res.dmg - 8; if (this.dizzy > 14) { this.state = 'dizzy'; this.dizzyT = rnd(2.5, 4); this.cancelAttack(); popup('DAZED', this.headPos().add(V3(0, 0.3, 0)), '#f0c020'); } }
+    if (res.zone === 'body' && res.dmg > 10 && res.weak && this.pain > 50) { this.state = 'hurt'; this.hurtT = 1.2; this.cancelAttack(); sfx.grunt(1, 0.8); }
     // reacting to what landed: pause, back off, or cover the spot that got hit
-    if (this.state === 'guard' && Math.random() < res.dmg / 25) {
+    if (this.state === 'guard' && Math.random() < res.dmg / 14) {
       const r = Math.random();
       if (r < 0.35) { this.cancelAttack(); this.next = Math.max(this.next, 0.8); }
       else if (r < 0.7) this.retreatT = rnd(0.6, 1.4);
       else { this.cover = rnd(0.8, 1.6); this.coverZone = res.zone === 'body' ? 'body' : 'head'; }
     }
-    if (res.dmg >= 14 && this.state === 'guard') { this.state = 'stagger'; this.staggerT = 0.4; this.cancelAttack(); }
-    if (this.opp.pattern === 'painter' && res.dmg < 10) this.counterWin = 0.4 * this.st.counter;
+    if (res.dmg >= 9 && this.state === 'guard') { this.state = 'stagger'; this.staggerT = 0.35; this.cancelAttack(); }
+    if (this.opp.pattern === 'painter' && res.dmg < 6) this.counterWin = 0.4 * this.st.counter;
     return res;
   }
   knockDown(res, dir) {
     this.state = 'down'; this.tonus = 0; this.downT = 0; this.knockdowns++; this.cancelAttack(); this.dizzy = 0;
     roundLog.oppDowns++;
-    this.parts.head.body.applyImpulseAtPoint(dir.clone().normalize().multiplyScalar(10), readPos(this.parts.head.body), true);
+    this.parts.chest.body.applyImpulseAtPoint(dir.clone().normalize().multiplyScalar(3), readPos(this.parts.chest.body), true);
     // how long he stays down: the harder the shot and the more damage built up, the longer
-    this.getUpAt = clamp(3 + res.dmg / 8 + this.trauma / 90 + this.knockdowns * 1.5 - this.st.chin * 2 + (this.hp <= 0 ? 4 : 0), 3, 12);
+    this.getUpAt = clamp(3 + res.dmg / 4 + this.trauma / 90 + this.knockdowns * 1.5 - this.st.chin * 2 + (this.hp <= 0 ? 4 : 0), 3, 12);
     sfx.fanfare(); cheer(1); popup('DOWN!', this.headPos().add(V3(0, 0.4, 0)), '#d41f3a', 2);
     referee.start('opp', this.getUpAt);
   }
@@ -884,22 +889,19 @@ function fistHit(f, info, pt, v, sp) {
   f.hitFrame = frameNo;
   lastHit.zone = res.weak || res.zone; lastHit.dmg = res.dmg; lastHit.tier = res.tier;
   pulse(f.side, 0.3 + res.dmg / 30, 25 + res.dmg * 2);
-  if (res.dmg > 1) hitStop = Math.min(0.07, 0.012 + res.dmg * 0.0018);
+  if (res.dmg > 1) hitStop = Math.min(0.07, 0.012 + res.dmg * 0.004);
   if (bx.mode === 'fight' && res.dmg > 1) {
     stats.landed++; stats.dmg += res.dmg; combo.n++; combo.t = 1.6; combo.best = Math.max(combo.best, combo.n);
     if (combo.n >= 3) popup(combo.n + ' HIT COMBO', pt.clone().add(V3(0, 0.3, 0)), '#f0a020');
   }
 }
-function processFistContacts() {
+function processFistContacts() { // fist sensors overlapping boxer parts
   for (const f of fists) {
     if (!f.valid) continue;
     const v = punchVel(f);
-    world.contactPairsWith(f.col, other => {
+    world.intersectionPairsWith(f.col, other => {
       const info = phys.info.get(other.handle);
-      if (!info || info.kind !== 'boxer') return;
-      let pt = null;
-      world.contactPair(f.col, other, m => { if (!pt && m.numSolverContacts() > 0) { const p = m.solverContactPoint(0); pt = V3(p.x, p.y, p.z); } });
-      fistHit(f, info, pt || f.target.clone(), v, v.length());
+      if (info && info.kind === 'boxer') fistHit(f, info, f.target.clone(), v, v.length());
     });
   }
 }
