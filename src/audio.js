@@ -144,6 +144,8 @@ export const sfx = {
   },
   // rising arpeggio for kills; higher with a bigger streak multiplier
   chime(mult = 1) { if (!ok()) return; const t = ctx.currentTime; const base = 520 * Math.pow(1.12, mult - 1); [0, 0.06, 0.12].forEach((d, i) => tone(t + d, base * [1, 1.26, 1.5][i], base * [1, 1.26, 1.5][i], 0.18, 0.16, 'triangle')); },
+  // arena crowd: a broad swell of filtered noise, louder for bigger moments (0..1)
+  crowd(i = 0.5) { if (!ok()) return; const t = ctx.currentTime; const s = ctx.createBufferSource(); s.buffer = noiseBuf; s.loop = true; const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 0.7; f.frequency.value = 900; const g = ctx.createGain(); const d = 0.8 + i * 1.6; g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05 + i * 0.22, t + 0.25 + i * 0.3); g.gain.exponentialRampToValueAtTime(0.0001, t + d); s.connect(f).connect(g).connect(master); s.start(t); s.stop(t + d + 0.05); s.onended = () => { s.disconnect(); f.disconnect(); g.disconnect(); }; },
   // boxing bell: a few inharmonic partials with a long ring
   bell() { if (!ok()) return; const t = ctx.currentTime; [[830, 0.22], [1990, 0.1], [2710, 0.07], [415, 0.08]].forEach(([f, g]) => tone(t, f, f * 0.995, 1.6, g, 'sine')); },
   fanfare() { if (!ok()) return; const t = ctx.currentTime; [0, 0.12, 0.24, 0.4].forEach((d, i) => tone(t + d, [392, 494, 587, 784][i], [392, 494, 587, 784][i], 0.35, 0.2, 'square')); },
